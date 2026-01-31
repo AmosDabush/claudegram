@@ -1,0 +1,37 @@
+# Environment and secrets
+.env
+*.env.local
+
+# Session data (contains user info)
+sessions.json
+
+# Backup files
+*.backup
+
+# Logs
+*.log
+bot.log
+
+# Runtime
+bot.pid
+data/restart-notify.txt
+
+# Dependencies
+node_modules/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Temp files
+*.tmp
+
+# User data (contains personal info)
+data/
+!data/.gitkeep
