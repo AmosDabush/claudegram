@@ -1,14 +1,16 @@
 {
-  "name": "telegram-bot",
+  "name": "claude-telegram-bot",
   "version": "1.0.0",
-  "main": "index.js",
+  "description": "Telegram bot that bridges to Claude CLI - full power, anywhere",
+  "main": "bot.js",
   "scripts": {
+    "setup": "node setup.js",
+    "start": "./start.sh",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
-  "keywords": [],
+  "keywords": ["claude", "telegram", "bot", "ai", "cli", "remote"],
   "author": "",
   "license": "MIT",
-  "description": "",
   "dependencies": {
     "dotenv": "^17.2.3",
     "edge-tts": "^1.0.1",

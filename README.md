@@ -2,6 +2,8 @@
 
 בוט טלגרם שמחבר אותך ל-Claude AI מכל מקום דרך הטלפון.
 
+> **🚀 First time here?** See the complete [Installation Guide](INSTALL.md) for step-by-step setup instructions.
+
 ## ארכיטקטורה
 
 ```
@@ -59,33 +61,37 @@
         └── coqui.js       # Coqui (local) - English only
 ```
 
-## התקנה
+## התקנה מהירה
 
-### דרישות
-- Node.js 18+
-- Claude CLI מותקן (`~/.local/bin/claude`)
-- Telegram Bot Token (מ-@BotFather)
+**🚀 Easiest way:**
 
-### שלבים
-
-1. **צור את קובץ .env:**
 ```bash
-cd ~/.claude/telegram-bot
-cat > .env << 'EOF'
-BOT_TOKEN=your-telegram-bot-token
-ALLOWED_USER_IDS=123456789,987654321
-EOF
+git clone [your-repo-url]
+cd claude-telegram-bot
+npm run setup
 ```
 
-2. **התקן dependencies:**
-```bash
-npm install
-```
+The interactive wizard guides you through everything!
 
-3. **הפעל:**
-```bash
-./start.sh
-```
+**📖 Full guide:** [INSTALL.md](INSTALL.md)
+
+### Manual Quick Start:
+
+1. **Get your bot token** from `@BotFather` on Telegram
+2. **Get your user ID** from `@userinfobot` on Telegram
+3. **Install dependencies:**
+   ```bash
+   npm install
+   ```
+4. **Configure:**
+   ```bash
+   cp .env.example .env
+   # Edit .env with your BOT_TOKEN and ALLOWED_USER_IDS
+   ```
+5. **Run:**
+   ```bash
+   ./start.sh
+   ```
 
 ---
 
@@ -531,11 +537,47 @@ edge-tts --text "test" --voice en-US-AriaNeural --write-media /tmp/test.mp3
 
 ---
 
-## אבטחה
+## ⚠️ אבטחה - חשוב לקרוא!
 
-- **ALLOWED_USER_IDS:** רק משתמשים מורשים יכולים להשתמש בבוט
-- **אל תשתף את BOT_TOKEN**
-- **YOLO mode מסוכן:** נותן ל-Claude לעשות הכל ללא אישור
+### 🔐 מודל האבטחה
+
+בוט זה מספק **גישה מלאה למחשב שלך** דרך Claude CLI:
+- ✅ יכול להריץ כל פקודה ב-terminal
+- ✅ יכול לקרוא/לכתוב כל קובץ שיש לך גישה אליו
+- ✅ יכול לדפדף בכל filesystem שלך
+- ✅ יכול להריץ git, npm, docker וכל כלי אחר
+
+**זה בכוונה!** הבוט נועד לשימוש אישי כדי לשלוט במחשב שלך מרחוק.
+
+### ✅ כללי אבטחה
+
+**חובה:**
+- 🔒 השתמש **רק בטוקן של בוט שלך** (צור דרך @BotFather)
+- 🔒 הוסף ל-`ALLOWED_USER_IDS` **רק את המזהה שלך**
+- 🔒 **אל תשתף** את ה-`BOT_TOKEN` עם אף אחד
+- 🔒 **לעולם אל** תעלה את קובץ `.env` לגיט או לשרת ציבורי
+- 🔒 השאר את הבוט **רץ רק על המחשב האישי שלך**
+
+**מומלץ:**
+- ⚠️ אל תשתמש ב-`yolo` mode (מדלג על כל אישורים)
+- ⚠️ בדוק logs מדי פעם לניסיונות גישה לא מורשים
+- ⚠️ שמור את ה-BOT_TOKEN במקום מאובטח
+
+### 🚫 אל תעשה
+
+- ❌ אל תפרסם את הבוט בשרת ציבורי
+- ❌ אל תוסיף משתמשים לא מוכרים ל-ALLOWED_USER_IDS
+- ❌ אל תשתף screenshots של הטוקן או קובץ .env
+- ❌ אל תשתמש בבוט על מחשב משותף
+
+### 🔄 אם הטוקן נחשף
+
+אם חושד שמישהו ראה את ה-BOT_TOKEN שלך:
+1. פתח שיחה עם @BotFather
+2. שלח `/revoke` והבחר את הבוט שלך
+3. קבל טוקן חדש
+4. עדכן את `.env` עם הטוקן החדש
+5. הפעל מחדש: `./start.sh`
 
 ---
 

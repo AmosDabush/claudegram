@@ -31,6 +31,8 @@ Thumbs.db
 
 # Temp files
 *.tmp
+temp_audio_*.mp3
+temp_audio_*.wav
 
 # User data (contains personal info)
 data/
