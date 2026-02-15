@@ -1,6 +1,6 @@
-# Installation Guide - Claude Telegram Bot
+# Setup Guide - Claudegram
 
-Complete step-by-step guide for setting up the Claude Telegram Bot from scratch.
+Complete step-by-step guide for setting up Claudegram from scratch.
 
 ---
 
@@ -10,8 +10,8 @@ We have an **interactive setup wizard** that does everything for you!
 
 ```bash
 # 1. Clone the repository
-git clone [your-repo-url]
-cd claude-telegram-bot
+git clone https://github.com/AmosDabush/claudegram.git
+cd claudegram
 
 # 2. Run the setup wizard
 npm run setup
@@ -123,12 +123,12 @@ If you want to allow other people to use your bot:
 
 ```bash
 # Option 1: Clone with git
-git clone https://github.com/YOUR_USERNAME/claude-telegram-bot.git
-cd claude-telegram-bot
+git clone https://github.com/AmosDabush/claudegram.git
+cd claudegram
 
 # Option 2: Download ZIP and extract
 # Then:
-cd claude-telegram-bot
+cd claudegram
 ```
 
 ### 3.2 Install dependencies
