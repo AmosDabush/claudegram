@@ -2,7 +2,7 @@
 # Start Telegram bot with auto-restart and syntax checking
 # Usage: ./start.sh [-s HOURS]  (e.g., ./start.sh -s 24)
 
-BOT_DIR="$HOME/.claude/telegram-bot"
+BOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PID_FILE="$BOT_DIR/data/bot.pid"
 LOCK_FILE="$BOT_DIR/data/start.lock"
 LAST_ACTIVITY_FILE="$BOT_DIR/data/last_activity"
