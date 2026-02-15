@@ -23,6 +23,7 @@ const gitCommands = require('./lib/commands/git');
 const voiceCommands = require('./lib/commands/voice');
 const claudeCommands = require('./lib/commands/claude');
 const parallelCommands = require('./lib/commands/parallel');
+const bookmarkCommands = require('./lib/commands/bookmark');
 
 // ===== Kill previous instance if exists =====
 const { execSync } = require('child_process');
@@ -107,7 +108,9 @@ bot.setMyCommands([
   { command: 'all', description: '📋 List all commands' },
   { command: 'restart', description: '🔄 Restart bot' },
   { command: 'close', description: '👋 Close bot (all instances)' },
-  { command: 'cancel', description: '🛑 Cancel current request' }
+  { command: 'cancel', description: '🛑 Cancel current request' },
+  { command: 'move_to_mac', description: '🖥 Move session to Mac terminal' },
+  { command: 'bookmark', description: '🔖 Save session bookmark with resume button' }
 ]).then(() => {
   console.log('✅ Bot commands menu set');
 }).catch(err => {
@@ -119,6 +122,9 @@ console.log(`📁 Data directory: ${path.dirname(FILES.sessions)}`);
 
 // Cleanup old temp files on startup
 cleanupTempFiles();
+
+// Sync CLI sessions to unified registry on startup
+try { require('./scripts/watch-cli-sessions'); } catch (e) { console.log('⚠️ CLI session sync skipped:', e.message); }
 
 // Restore active sessions for users with persistSession enabled
 restoreActiveSessions();
@@ -153,6 +159,7 @@ gitCommands.register(bot, isAuthorized);
 voiceCommands.register(bot, isAuthorized);
 claudeCommands.register(bot, isAuthorized);
 parallelCommands.register(bot, isAuthorized);
+bookmarkCommands.register(bot, isAuthorized);
 
 // ===== Help commands =====
 bot.onText(/\/start$/, (msg) => {  // Only match /start without parameters
@@ -186,7 +193,7 @@ Current: *${userState.currentProject}*
   bot.sendMessage(msg.chat.id, help, { parse_mode: 'Markdown' });
 });
 
-bot.onText(/\/(help|\?)/, (msg) => {
+bot.onText(/\/(help|\?|telegram\s*(help|\?))/, (msg) => {
   if (!isAuthorized(msg)) return;
 
   const userState = getUserState(msg.chat.id);
@@ -194,51 +201,75 @@ bot.onText(/\/(help|\?)/, (msg) => {
   const modeName = userState.sessionMode ? 'Session' : 'On-Demand';
   const chunkPreset = VOICE_CHUNK_PRESETS[userState.voiceSettings.chunkPreset || 'medium'];
 
-  const helpText = `🤖 *Claude Code Bot*
+  const helpText = `🤖 *Claude Code Telegram Bot*
 
 📂 *Navigation:*
-/projects - Saved projects (buttons)
-/browse - Browse folders (buttons)
-/pwd - Show current path + mode
-/cd path - Change directory
-/add name path - Add project
+/projects — Switch between saved project folders
+/browse — Interactive folder browser with buttons
+/pwd — Show current working directory and mode
+/cd \`path\` — Change working directory
+/add \`name\` \`path\` — Save a project shortcut
 
-📋 *Quick Commands:*
-/ls - List folder contents
-/tree - Folder structure (depth 2)
-/files - List all files
-/repo - Git repo info
-/branch - Current branch
-/status or /gs - Git status
-
-🔄 *Interactive:*
-/interactive - Toggle interactive mode
-/terminal - iTerm/background display
-/resume - Resume last session
+📋 *Files & Git:*
+/ls — List files in current directory
+/tree — Show folder tree (2 levels deep)
+/files — List all files recursively
+/repo — Git repo info (remote, branch, last commit)
+/branch — Show current git branch
+/branches — List all branches
+/status /gs — Git status (modified/staged files)
+/git — Git commands menu
 
 🤖 *Claude AI:*
-Just type → Send to Claude
-/sessions - List past sessions
-/session - Toggle on-demand/session mode
-/persist - Keep session after restart
-/new - Start fresh session
-/mode - Mode (default/fast/plan/yolo)
-/cancel - Stop current request
+Just type any message → sends to Claude
+/new — Start a fresh session (clears context)
+/session — Toggle session/on-demand mode
+/sessions — Browse & resume past sessions (Telegram + CLI)
+/persist — Keep session alive after bot restart
+/mode — Switch mode: default / fast / plan / yolo
+/fast \`prompt\` — One-shot fast response (no session)
+/resume — Resume the last active session
+/cancel — Stop current Claude request
+/thought — Toggle extended thinking (off/on/auto)
 
-🔊 *Voice:*
-/voice - Toggle voice responses
-/tts - Select TTS engine
-/setvoice - Change voice
-/setvoicespeed - Change speed
-/voiceresponse - Response style
-/voicechunk - Chunk size (${chunkPreset.icon} ${chunkPreset.name})
+🔄 *Interactive Mode:*
+/interactive — Toggle interactive (live streaming) mode
+/terminal — Toggle iTerm terminal output display
 
-📜 *Logs:*
-/logs - Last 50 lines
-/logfile - Download full log
+🔀 *Session Transfer:*
+/move\\_to\\_mac — Send current session to Mac terminal
+/sessions — Also shows CLI sessions for resume here
 
-❓ /? or /help - This help
-📱 /all - Interactive menu
+🧠 *Multi-Agent:*
+/perspectives \`N\` \`question\` — Get N different viewpoints on a question
+/investigate \`problem\` — Break down and investigate in parallel branches
+/cancelall — Cancel all running parallel tasks
+
+🔊 *Voice (TTS):*
+/voice — Toggle voice responses (off/on/auto)
+/tts — Select TTS engine (Edge/Google/Piper)
+/setvoice — Change voice actor
+/setvoicespeed — Adjust speech speed
+/voiceresponse — Set response style (casual/bro/formal)
+/voicechunk — Chunk size for long responses (${chunkPreset.icon} ${chunkPreset.name})
+/textstyle — Text formatting style (off/code\\_only/minimal)
+/t — Get last response as text (no voice)
+/v — Get last response as voice
+
+📜 *Logs & System:*
+/logs — Show last 50 log lines
+/logfile — Download full log file
+/clearlogs — Clear log file
+/restart — Restart bot process
+/restart clean — Restart + clear all sessions
+/close — Shutdown bot completely
+/reset — Reset user settings to defaults
+
+📱 *Menus:*
+/menu — Main menu with categories
+/all — Interactive list of all commands
+/settings — Quick settings panel
+/claude — Claude session & settings panel
 
 📍 *${userState.currentProject}* | ${modeIcon} ${modeName} | ${userState.voiceEnabled ? '🔊' : '🔇'}`;
 
@@ -477,6 +508,7 @@ bot.onText(/\/claude/, async (msg) => {
     [{ text: '🆕 New Session', callback_data: 'cmd:new' }],
     [{ text: `${sessionIcon} Toggle Mode`, callback_data: 'cmd:session' }, { text: '⚙️ Permission', callback_data: 'cmd:mode' }],
     [{ text: `${thoughtIcon} Thought Log`, callback_data: 'cmd:thought' }, { text: '💾 Persist', callback_data: 'cmd:persist' }],
+    [{ text: '🖥 Move to Mac', callback_data: 'cmd:move_to_mac' }],
     [{ text: '🛑 Cancel', callback_data: 'cmd:cancel' }]
   ];
 
@@ -540,16 +572,16 @@ bot.onText(/\/restart(?:\s+(clean))?/, async (msg, match) => {
   // Save chat ID for restart notification
   fs.writeFileSync(FILES.restartNotify, chatId.toString());
 
-  // Spawn new bot process before exiting
+  // Restart via start.sh to get wrapper + caffeinate back
   const { spawn } = require('child_process');
   setTimeout(() => {
-    spawn('node', ['bot.js'], {
+    spawn('bash', ['start.sh'], {
       cwd: __dirname,
       detached: true,
       stdio: 'ignore'
     }).unref();
 
-    // Exit current process
+    // Exit current process (start.sh will kill us anyway, but be clean)
     setTimeout(() => process.exit(0), 500);
   }, 500);
 });
@@ -913,6 +945,7 @@ function handleAllMenuCallback(bot, query, userState) {
       [{ text: `${sessionIcon} Session Mode`, callback_data: 'cmd:session' }, { text: '🆕 New Session', callback_data: 'cmd:new' }],
       [{ text: '💾 Persist Session', callback_data: 'cmd:persist' }, { text: '⚙️ Permission Mode', callback_data: 'cmd:mode' }],
       [{ text: '🧠 Thought Log', callback_data: 'cmd:thought' }],
+      [{ text: '🖥 Move to Mac', callback_data: 'cmd:move_to_mac' }],
       [{ text: '🛑 Cancel Request', callback_data: 'cmd:cancel' }],
       [{ text: '⬅️ Back', callback_data: 'all:back' }]
     ];
@@ -1079,6 +1112,16 @@ function handleLogCallback(bot, query, chatId) {
 
 // ===== Handle regular messages (Claude interaction) =====
 bot.on('message', async (msg) => {
+  // Update last activity timestamp for idle detection
+  try {
+    fs.writeFileSync(FILES.lastActivity, Date.now().toString());
+  } catch (e) {
+    // Ignore errors - not critical
+  }
+
+  // Check if this is a bookmark reply first
+  if (bookmarkCommands.handleReply(msg, bot)) return;
+
   await claudeCommands.handleMessage(bot, msg, isAuthorized);
 });
 
