@@ -82,23 +82,42 @@ schedule_next_wake() {
 }
 
 # ================= ROUND =================
-if bot_process_alive && heartbeat_fresh; then
+# One message per incident — never per-minute spam. State lives in $ALERT:
+# it exists only while we're in a failing-and-already-announced state.
+ALERT="$STATE_DIR/waker.alert"
+REMIND_SEC=1800   # if still down, remind at most once every 30 min
+
+healthy() { bot_process_alive && heartbeat_fresh; }
+
+if healthy; then
   log "ok — bot healthy"
-elif bot_process_alive; then
-  log "bot STUCK (heartbeat stale) — restarting"
-  revive
-  if bot_process_alive && heartbeat_fresh; then
-    log "recovered from stuck"; notify "🩺 הבוט נתקע — השומר איתחל אותו ($(date '+%H:%M'))"
-  else
-    log "restart after stuck did not recover cleanly"; notify "⚠️ השומר איתחל בוט תקוע אבל הוא עדיין לא בריא ($(date '+%H:%M'))"
+  if [ -f "$ALERT" ]; then
+    notify "🩺 הבוט חזר לעצמו ✅ ($(date '+%H:%M'))"
+    rm -f "$ALERT"
   fi
 else
-  log "bot DOWN — reviving"
+  if bot_process_alive; then log "bot STUCK — restarting"; else log "bot DOWN — reviving"; fi
   revive
-  if bot_process_alive; then
-    log "revived"; notify "🩺 הבוט היה למטה — השומר החזיר אותו ($(date '+%H:%M'))"
+  if healthy; then
+    log "revived"
+    if [ -f "$ALERT" ]; then
+      notify "🩺 הבוט חזר לעצמו ✅ ($(date '+%H:%M'))"; rm -f "$ALERT"
+    else
+      notify "🩺 הבוט נפל והשומר החזיר אותו ($(date '+%H:%M'))"
+    fi
   else
-    log "REVIVE FAILED"; notify "⚠️ השומר ניסה להרים את הבוט ונכשל ($(date '+%H:%M')). צריך מבט ידני."
+    log "revive failed — still down"
+    NOW=$(date +%s)
+    if [ ! -f "$ALERT" ]; then
+      notify "⚠️ הבוט למטה והשומר לא מצליח להרים ($(date '+%H:%M')). ממשיך לנסות בשקט."
+      echo "$NOW" > "$ALERT"
+    else
+      LAST=$(cat "$ALERT" 2>/dev/null | tr -dc '0-9'); [ -z "$LAST" ] && LAST=0
+      if [ $(( NOW - LAST )) -ge "$REMIND_SEC" ]; then
+        notify "⚠️ הבוט עדיין למטה כבר זמן מה ($(date '+%H:%M')). עדיין מנסה."
+        echo "$NOW" > "$ALERT"
+      fi
+    fi
   fi
 fi
 
