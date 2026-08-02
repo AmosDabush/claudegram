@@ -39,27 +39,40 @@ if [ -f "$LOCK_FILE" ]; then
 fi
 touch "$LOCK_FILE"
 
-# Kill ALL bot-related processes (bot.js AND wrapper.js)
-PIDS=$(ps aux | grep -E 'node (bot|wrapper)\.js' | grep -v grep | awk '{print $2}')
+# Kill bot-related processes ONLY from this directory
+PIDS=""
+for PID in $(ps aux | grep -E 'node (bot|wrapper)\.js' | grep -v grep | awk '{print $2}'); do
+    PID_CWD=$(lsof -p "$PID" 2>/dev/null | grep cwd | awk '{print $NF}')
+    if [ "$PID_CWD" = "$BOT_DIR" ] || [ "$PID_CWD" = "/private$BOT_DIR" ]; then
+        PIDS="$PIDS $PID"
+    fi
+done
 if [ -n "$PIDS" ]; then
-    echo "Killing existing bot processes: $PIDS"
+    echo "Killing bot processes from this dir:$PIDS"
     echo "$PIDS" | xargs kill 2>/dev/null
     sleep 2
     # Force kill any remaining
-    REMAINING=$(ps aux | grep -E 'node (bot|wrapper)\.js' | grep -v grep | awk '{print $2}')
-    if [ -n "$REMAINING" ]; then
-        echo "Force killing: $REMAINING"
-        echo "$REMAINING" | xargs kill -9 2>/dev/null
-        sleep 1
-    fi
+    for PID in $PIDS; do
+        if ps -p "$PID" > /dev/null 2>&1; then
+            echo "Force killing: $PID"
+            kill -9 "$PID" 2>/dev/null
+        fi
+    done
+    sleep 1
 fi
 
-# Kill caffeinate processes that might be running
-CAFFEINATE_PIDS=$(ps aux | grep 'caffeinate.*node wrapper.js' | grep -v grep | awk '{print $2}')
-if [ -n "$CAFFEINATE_PIDS" ]; then
-    echo "Killing caffeinate processes: $CAFFEINATE_PIDS"
-    echo "$CAFFEINATE_PIDS" | xargs kill 2>/dev/null
-fi
+# Kill caffeinate processes from this directory only
+for PID in $(ps aux | grep 'caffeinate.*node wrapper.js' | grep -v grep | awk '{print $2}'); do
+    # caffeinate's child is wrapper.js - check if wrapper's cwd matches
+    CHILD_PID=$(pgrep -P "$PID" 2>/dev/null | head -1)
+    if [ -n "$CHILD_PID" ]; then
+        CHILD_CWD=$(lsof -p "$CHILD_PID" 2>/dev/null | grep cwd | awk '{print $NF}')
+        if [ "$CHILD_CWD" = "$BOT_DIR" ] || [ "$CHILD_CWD" = "/private$BOT_DIR" ]; then
+            echo "Killing caffeinate: $PID"
+            kill "$PID" 2>/dev/null
+        fi
+    fi
+done
 
 # Clean up PID file
 rm -f "$PID_FILE"

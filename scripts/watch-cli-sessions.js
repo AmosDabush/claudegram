@@ -24,13 +24,19 @@ function scanCliSessions() {
         const existing = findSession(session.sessionId);
 
         if (existing) {
-          // Update if newer
+          const updates = {};
+          // Bump activity/count only when the file is genuinely newer
           if (new Date(session.timestamp) > new Date(existing.lastUsed)) {
-            updateSession(session.sessionId, {
-              lastUsed: session.timestamp,
-              messageCount: session.messageCount,
-              topic: session.topic
-            });
+            updates.lastUsed = session.timestamp;
+            updates.messageCount = session.messageCount;
+          }
+          // Self-heal old garbage titles: refresh whenever the freshly-parsed
+          // topic differs, regardless of mtime
+          if (session.topic && session.topic !== existing.topic) {
+            updates.topic = session.topic;
+          }
+          if (Object.keys(updates).length) {
+            updateSession(session.sessionId, updates);
             updated++;
           }
         } else {

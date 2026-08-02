@@ -24,6 +24,7 @@ const voiceCommands = require('./lib/commands/voice');
 const claudeCommands = require('./lib/commands/claude');
 const parallelCommands = require('./lib/commands/parallel');
 const bookmarkCommands = require('./lib/commands/bookmark');
+const helpCommands = require('./lib/commands/help');
 
 // ===== Kill previous instance if exists =====
 const { execSync } = require('child_process');
@@ -92,25 +93,69 @@ if (ALLOWED_USER_IDS.length === 0) {
 }
 
 // ===== Initialize bot =====
-const bot = new TelegramBot(BOT_TOKEN, { polling: true });
+const bot = new TelegramBot(BOT_TOKEN, {
+  polling: {
+    autoStart: true,
+    params: { timeout: 30 }
+  }
+});
+
+// ===== Polling error recovery =====
+bot.on('polling_error', (err) => {
+  const msg = err.message || '';
+  // Network errors (Mac sleep, WiFi drop) - just log briefly, bot will retry
+  if (msg.includes('ENOTFOUND') || msg.includes('ECONNRESET') || msg.includes('ETIMEDOUT') || msg.includes('socket hang up')) {
+    console.log(`[Polling] Network error: ${msg.split(':').pop().trim()}`);
+    return;
+  }
+  // Telegram server errors (502, 429) - transient
+  if (msg.includes('502') || msg.includes('429')) {
+    console.log(`[Polling] Telegram server error: ${msg.split(':').pop().trim()}`);
+    return;
+  }
+  // Unknown polling errors - log full message
+  console.log(`[Polling] Error: ${msg}`);
+});
+
+// ===== Catch unhandled rejections to prevent crashes =====
+process.on('unhandledRejection', (err) => {
+  const msg = (err && err.message) || String(err);
+  // Known harmless Telegram API errors
+  if (msg.includes('message is not modified') ||
+      msg.includes('query is too old') ||
+      msg.includes("can't parse entities") ||
+      msg.includes('ECONNRESET') ||
+      msg.includes('ETIMEDOUT') ||
+      msg.includes('ENOTFOUND')) {
+    console.log(`[Unhandled] ${msg.substring(0, 120)}`);
+    return;
+  }
+  console.error(`[Unhandled Rejection] ${msg}`);
+  if (err && err.stack) console.error(err.stack);
+});
 
 // Set bot commands menu
 bot.setMyCommands([
   { command: 'menu', description: '📱 Main menu (all categories)' },
   { command: 'settings', description: '⚙️ Quick settings' },
   { command: 'claude', description: '🤖 Claude session & settings' },
+  { command: 'model', description: '🧠 Switch Claude model' },
   { command: 'sessions', description: '📚 Browse & resume sessions' },
   { command: 'projects', description: '📂 Saved projects' },
   { command: 'browse', description: '🗂 Browse folders' },
   { command: 'git', description: '🌿 Git commands' },
   { command: 'voice', description: '🔊 Voice settings' },
-  { command: 'help', description: '❓ All commands' },
+  { command: 'help', description: '📖 Help topics & knowledge base' },
   { command: 'all', description: '📋 List all commands' },
   { command: 'restart', description: '🔄 Restart bot' },
   { command: 'close', description: '👋 Close bot (all instances)' },
   { command: 'cancel', description: '🛑 Cancel current request' },
-  { command: 'move_to_mac', description: '🖥 Move session to Mac terminal' },
-  { command: 'bookmark', description: '🔖 Save session bookmark with resume button' }
+  { command: 'resume_pinned', description: '📌 Resume pinned session' },
+  { command: 'move_to_mac', description: '🖥 Move to Mac terminal' },
+  { command: 'bookmark', description: '🔖 Bookmark (save)' },
+  { command: 'bookmarks', description: '🔖 Bookmarks (show all)' },
+  { command: 'pin', description: '📌 Pin current session' },
+  { command: 'anydesk', description: '🕹 AnyDesk' }
 ]).then(() => {
   console.log('✅ Bot commands menu set');
 }).catch(err => {
@@ -160,6 +205,7 @@ voiceCommands.register(bot, isAuthorized);
 claudeCommands.register(bot, isAuthorized);
 parallelCommands.register(bot, isAuthorized);
 bookmarkCommands.register(bot, isAuthorized);
+helpCommands.register(bot, isAuthorized);
 
 // ===== Help commands =====
 bot.onText(/\/start$/, (msg) => {  // Only match /start without parameters
@@ -191,89 +237,6 @@ Current: *${userState.currentProject}*
   `;
 
   bot.sendMessage(msg.chat.id, help, { parse_mode: 'Markdown' });
-});
-
-bot.onText(/\/(help|\?|telegram\s*(help|\?))/, (msg) => {
-  if (!isAuthorized(msg)) return;
-
-  const userState = getUserState(msg.chat.id);
-  const modeIcon = userState.sessionMode ? '💬' : '⚡';
-  const modeName = userState.sessionMode ? 'Session' : 'On-Demand';
-  const chunkPreset = VOICE_CHUNK_PRESETS[userState.voiceSettings.chunkPreset || 'medium'];
-
-  const helpText = `🤖 *Claude Code Telegram Bot*
-
-📂 *Navigation:*
-/projects — Switch between saved project folders
-/browse — Interactive folder browser with buttons
-/pwd — Show current working directory and mode
-/cd \`path\` — Change working directory
-/add \`name\` \`path\` — Save a project shortcut
-
-📋 *Files & Git:*
-/ls — List files in current directory
-/tree — Show folder tree (2 levels deep)
-/files — List all files recursively
-/repo — Git repo info (remote, branch, last commit)
-/branch — Show current git branch
-/branches — List all branches
-/status /gs — Git status (modified/staged files)
-/git — Git commands menu
-
-🤖 *Claude AI:*
-Just type any message → sends to Claude
-/new — Start a fresh session (clears context)
-/session — Toggle session/on-demand mode
-/sessions — Browse & resume past sessions (Telegram + CLI)
-/persist — Keep session alive after bot restart
-/mode — Switch mode: default / fast / plan / yolo
-/fast \`prompt\` — One-shot fast response (no session)
-/resume — Resume the last active session
-/cancel — Stop current Claude request
-/thought — Toggle extended thinking (off/on/auto)
-
-🔄 *Interactive Mode:*
-/interactive — Toggle interactive (live streaming) mode
-/terminal — Toggle iTerm terminal output display
-
-🔀 *Session Transfer:*
-/move\\_to\\_mac — Send current session to Mac terminal
-/sessions — Also shows CLI sessions for resume here
-
-🧠 *Multi-Agent:*
-/perspectives \`N\` \`question\` — Get N different viewpoints on a question
-/investigate \`problem\` — Break down and investigate in parallel branches
-/cancelall — Cancel all running parallel tasks
-
-🔊 *Voice (TTS):*
-/voice — Toggle voice responses (off/on/auto)
-/tts — Select TTS engine (Edge/Google/Piper)
-/setvoice — Change voice actor
-/setvoicespeed — Adjust speech speed
-/voiceresponse — Set response style (casual/bro/formal)
-/voicechunk — Chunk size for long responses (${chunkPreset.icon} ${chunkPreset.name})
-/textstyle — Text formatting style (off/code\\_only/minimal)
-/t — Get last response as text (no voice)
-/v — Get last response as voice
-
-📜 *Logs & System:*
-/logs — Show last 50 log lines
-/logfile — Download full log file
-/clearlogs — Clear log file
-/restart — Restart bot process
-/restart clean — Restart + clear all sessions
-/close — Shutdown bot completely
-/reset — Reset user settings to defaults
-
-📱 *Menus:*
-/menu — Main menu with categories
-/all — Interactive list of all commands
-/settings — Quick settings panel
-/claude — Claude session & settings panel
-
-📍 *${userState.currentProject}* | ${modeIcon} ${modeName} | ${userState.voiceEnabled ? '🔊' : '🔇'}`;
-
-  bot.sendMessage(msg.chat.id, helpText, { parse_mode: 'Markdown' });
 });
 
 // ===== /all - List all commands =====
@@ -508,7 +471,9 @@ bot.onText(/\/claude/, async (msg) => {
     [{ text: '🆕 New Session', callback_data: 'cmd:new' }],
     [{ text: `${sessionIcon} Toggle Mode`, callback_data: 'cmd:session' }, { text: '⚙️ Permission', callback_data: 'cmd:mode' }],
     [{ text: `${thoughtIcon} Thought Log`, callback_data: 'cmd:thought' }, { text: '💾 Persist', callback_data: 'cmd:persist' }],
+    [{ text: '🛠 Telegram Project', callback_data: 'cmd:tgproject' }],
     [{ text: '🖥 Move to Mac', callback_data: 'cmd:move_to_mac' }],
+    [{ text: '🕹 AnyDesk (שליטה במאק)', callback_data: 'cmd:anydesk' }],
     [{ text: '🛑 Cancel', callback_data: 'cmd:cancel' }]
   ];
 
@@ -761,6 +726,34 @@ bot.onText(/\/clearlogs/, async (msg) => {
   }
 });
 
+// /anydesk - wake AnyDesk on the Mac and send back the address to connect to
+async function handleAnydesk(chatId) {
+  const script = path.join(process.env.HOME, '.claude', 'telegram-bot', 'scripts', 'anydesk-up.sh');
+  await bot.sendMessage(chatId, '🖥 מעיר את AnyDesk על המאק...');
+  try {
+    // AnyDesk polls up to ~12s to come up, so give the command headroom past
+    // runQuickCommand's 10s default — otherwise a cold start gets cut off.
+    const output = await runQuickCommand(`bash "${script}"`, process.env.HOME, 20000);
+    const m = output.match(/ID:\s*([0-9]{6,})/);
+    if (m) {
+      await bot.sendMessage(chatId,
+        `🖥 *AnyDesk מוכן*\n\n` +
+        `כתובת: \`${m[1]}\`\n\n` +
+        `פתח AnyDesk בטלפון, הקש את הכתובת, וסיסמת הגישה שהגדרת. אם סימנת "התחבר אוטומטית" זה ייכנס לבד.`,
+        { parse_mode: 'Markdown' });
+    } else {
+      await bot.sendMessage(chatId, `⚠️ AnyDesk לא הגיב בזמן.\n\`\`\`\n${output}\n\`\`\``, { parse_mode: 'Markdown' });
+    }
+  } catch (e) {
+    bot.sendMessage(chatId, `❌ שגיאה: ${e.message}`);
+  }
+}
+
+bot.onText(/\/anydesk/, async (msg) => {
+  if (!isAuthorized(msg)) return;
+  handleAnydesk(msg.chat.id);
+});
+
 // ===== Callback query handler =====
 bot.on('callback_query', async (query) => {
   if (!ALLOWED_USER_IDS.includes(query.from.id)) {
@@ -778,6 +771,8 @@ bot.on('callback_query', async (query) => {
   if (voiceCommands.handleCallback(bot, query, userState)) return;
   if (await claudeCommands.handleCallback(bot, query, userState)) return;  // async handler needs await
   if (parallelCommands.handleCallback(bot, query, userState)) return;
+  if (helpCommands.handleCallback(bot, query, userState)) return;
+  if (bookmarkCommands.handleCallback(bot, query, userState)) return;
 
   // Handle quick settings callbacks
   if (data.startsWith('qset:')) {
@@ -835,6 +830,13 @@ bot.on('callback_query', async (query) => {
   // Handle log commands
   if (data === 'cmd:logs50' || data === 'cmd:logs100' || data === 'cmd:logfile' || data === 'cmd:clearlogs') {
     handleLogCallback(bot, query, chatId);
+    return;
+  }
+
+  // AnyDesk - wake remote-access on the Mac
+  if (data === 'cmd:anydesk') {
+    bot.answerCallbackQuery(query.id, { text: '🖥 AnyDesk' });
+    handleAnydesk(chatId);
     return;
   }
 
@@ -1121,6 +1123,9 @@ bot.on('message', async (msg) => {
 
   // Check if this is a bookmark reply first
   if (bookmarkCommands.handleReply(msg, bot)) return;
+
+  // Or a session-note reply from the management card
+  if (claudeCommands.handleNoteReply(msg, bot)) return;
 
   await claudeCommands.handleMessage(bot, msg, isAuthorized);
 });
