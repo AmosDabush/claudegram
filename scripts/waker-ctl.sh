@@ -96,7 +96,7 @@ case "$1" in
     if bot_healthy; then echo "  bot      : healthy"; else echo "  bot      : down/stuck"; fi
     if [ -f "$SUDOERS" ]; then echo "  wake     : enabled (can wake from sleep)"; else echo "  wake     : awake-only (no sleep-wake yet)"; fi
     NEXT=$(pmset -g sched 2>/dev/null | grep -i 'wake' | grep -v apple | head -1)
-    [ -n "$NEXT" ] && echo "  next     :$NEXT"
+    if [ -n "$NEXT" ]; then echo "  next     :$NEXT"; fi
     ;;
 
   install)

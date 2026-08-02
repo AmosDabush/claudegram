@@ -67,10 +67,11 @@ schedule_next_wake() {
   sec=$(( m * 60 ))
   now=$(date +%s)
   next=$(( (now / sec + 1) * sec ))          # next clock-aligned boundary
-  when=$(date -r "$next" "+%m/%d/%y %H:%M:%S")
+  when=$(date -r "$next" "+%m/%d/%y %H:%M:%S")           # 2-digit year: for `pmset schedule`
+  when_disp=$(date -r "$next" "+%m/%d/%Y %H:%M:%S")      # 4-digit year: how `pmset -g sched` prints it
 
   # Dedup: skip if a wake at that exact time is already scheduled
-  if pmset -g sched 2>/dev/null | grep -q "$when"; then
+  if pmset -g sched 2>/dev/null | grep -q "$when_disp"; then
     return 0
   fi
   if sudo -n /usr/bin/pmset schedule wake "$when" >/dev/null 2>&1; then
