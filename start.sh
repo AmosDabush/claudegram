@@ -3,6 +3,10 @@
 # Usage: ./start.sh [-s HOURS]  (e.g., ./start.sh -s 24)
 
 BOT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# Under launchd (the waker) PATH is minimal and lacks node/homebrew — make start.sh
+# self-sufficient so `node` is always found, no matter who launches it.
+export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$HOME/bin:$PATH"
 PID_FILE="$BOT_DIR/data/bot.pid"
 LOCK_FILE="$BOT_DIR/data/start.lock"
 LAST_ACTIVITY_FILE="$BOT_DIR/data/last_activity"
