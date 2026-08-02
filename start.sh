@@ -133,6 +133,9 @@ fi
 # Remove lock
 rm -f "$LOCK_FILE"
 
+# Make sure the independent waker/caretaker is running (no-op until installed)
+bash "$BOT_DIR/scripts/waker-ctl.sh" ensure >/dev/null 2>&1 || true
+
 sleep 2
 if ps -p $PID > /dev/null 2>&1; then
     echo "✅ Telegram bot started (PID: $PID)"

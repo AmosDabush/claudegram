@@ -155,7 +155,8 @@ bot.setMyCommands([
   { command: 'bookmark', description: '🔖 Bookmark (save)' },
   { command: 'bookmarks', description: '🔖 Bookmarks (show all)' },
   { command: 'pin', description: '📌 Pin current session' },
-  { command: 'anydesk', description: '🕹 AnyDesk' }
+  { command: 'anydesk', description: '🕹 AnyDesk' },
+  { command: 'waker', description: '⏰ Bot waker (status / set minutes)' }
 ]).then(() => {
   console.log('✅ Bot commands menu set');
 }).catch(err => {
@@ -164,6 +165,13 @@ bot.setMyCommands([
 
 console.log('🤖 Claude Telegram Bot started!');
 console.log(`📁 Data directory: ${path.dirname(FILES.sessions)}`);
+
+// Heartbeat — lets the independent caretaker tell "stuck" from "alive".
+// If the event loop ever wedges, this stops updating and the caretaker notices.
+const HEARTBEAT_FILE = path.join(path.dirname(FILES.sessions), 'heartbeat');
+const writeHeartbeat = () => { try { fs.writeFileSync(HEARTBEAT_FILE, Date.now().toString()); } catch (e) {} };
+writeHeartbeat();
+setInterval(writeHeartbeat, 30000);
 
 // Cleanup old temp files on startup
 cleanupTempFiles();
@@ -752,6 +760,19 @@ async function handleAnydesk(chatId) {
 bot.onText(/\/anydesk/, async (msg) => {
   if (!isAuthorized(msg)) return;
   handleAnydesk(msg.chat.id);
+});
+
+// /waker - status of the independent bot-waker, or /waker <minutes> to set interval
+bot.onText(/\/waker(?:\s+(\d+))?$/, async (msg, match) => {
+  if (!isAuthorized(msg)) return;
+  const script = path.join(process.env.HOME, '.claude', 'telegram-bot', 'scripts', 'waker-ctl.sh');
+  const sub = match[1] ? `set ${match[1]}` : 'status';
+  try {
+    const out = await runQuickCommand(`bash "${script}" ${sub}`, process.env.HOME);
+    bot.sendMessage(msg.chat.id, '⏰ *Waker*\n```\n' + ((out || '(no output)').trim()) + '\n```', { parse_mode: 'Markdown' });
+  } catch (e) {
+    bot.sendMessage(msg.chat.id, `❌ ${e.message}`);
+  }
 });
 
 // ===== Callback query handler =====
