@@ -122,17 +122,25 @@ else
     echo "⚡ First run - starting with caffeinate"
 fi
 
-# Start bot with wrapper (auto-restart on crash)
+# Start bot with wrapper (auto-restart on crash).
+#
+# Detach into a NEW SESSION so the bot outlives whoever launched it. Without
+# this the bot dies seconds after it starts:
+#   - launchd SIGTERMs the caretaker job's whole process group when that job
+#     exits, so the waker killed the very bot it had just revived, every minute
+#   - a Terminal window signals its foreground group on close/Ctrl-Z
+# macOS ships no setsid(1), so call POSIX::setsid via perl and exec in place.
+DETACH_LOG="$BOT_DIR/data/detached.log"
 if [ "$USE_CAFFEINATE" = true ]; then
-    # Use caffeinate to keep system awake (but allow display/disk sleep for battery efficiency)
-    # -i = prevent system idle sleep (keeps bot responsive while allowing display/disk to sleep)
-    caffeinate -i node wrapper.js &
-    PID=$!
+    # -i = prevent system idle sleep (display/disk may still sleep)
+    perl -MPOSIX -e 'setsid(); exec @ARGV or die "exec: $!"' -- \
+        caffeinate -i node wrapper.js </dev/null >>"$DETACH_LOG" 2>&1 &
 else
     # No caffeinate - allow Mac to sleep if idle
-    node wrapper.js &
-    PID=$!
+    perl -MPOSIX -e 'setsid(); exec @ARGV or die "exec: $!"' -- \
+        node wrapper.js </dev/null >>"$DETACH_LOG" 2>&1 &
 fi
+disown 2>/dev/null || true
 
 # Remove lock
 rm -f "$LOCK_FILE"
@@ -140,9 +148,17 @@ rm -f "$LOCK_FILE"
 # Make sure the independent waker/caretaker is running (no-op until installed)
 bash "$BOT_DIR/scripts/waker-ctl.sh" ensure >/dev/null 2>&1 || true
 
-sleep 2
-if ps -p $PID > /dev/null 2>&1; then
-    echo "✅ Telegram bot started (PID: $PID)"
+# Wait for the detached wrapper to appear. $! is useless here (the perl shim
+# execs away), and it used to report the caffeinate pid, so ask the process
+# table instead.
+BOT_PID=""
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+    BOT_PID=$(pgrep -f 'node wrapper\.js' | head -1)
+    [ -n "$BOT_PID" ] && break
+    sleep 1
+done
+if [ -n "$BOT_PID" ]; then
+    echo "✅ Telegram bot started (PID: $BOT_PID)"
     if [ "$USE_CAFFEINATE" = true ]; then
         echo "☕ Mac stays awake while bot has recent activity (<${IDLE_TIMEOUT_HOURS}h idle)"
     else

@@ -77,6 +77,10 @@ Technical documentation for understanding exact behavior flows.
   // Thought Log
   thoughtMode: 'off',               // off | on | auto
 
+  // Live streaming
+  streamMode: 'on',                 // off | on | live (on = type the answer out,
+                                    //                   live = also type the thinking)
+
   // Runtime (not persisted)
   isProcessing: false,
   currentClaudeProc: null,
@@ -689,3 +693,43 @@ Commands to view:
 - `/logs 100` - Last 100 lines
 - `/logfile` - Download full log
 - `/clearlogs` - Clear log file
+
+---
+
+## Live Token Streaming
+
+Claude is spawned with `--include-partial-messages`, so the CLI emits
+`stream_event` deltas on top of the whole-block `assistant` events:
+
+```
+stream_event content_block_start   { type: 'thinking' }
+stream_event content_block_delta   { type: 'thinking_delta', thinking: '...' }
+assistant                          ← the complete thinking block
+stream_event content_block_start   { type: 'text' }
+stream_event content_block_delta   { type: 'text_delta', text: 'hello' }
+assistant                          ← the complete text block (authoritative)
+result
+```
+
+Both `startInteractiveSession()` and `runClaudeStreaming()` accumulate the
+`text_delta`s and edit them into the Telegram message while they arrive, so the
+answer is watched being written instead of landing whole at the end.
+
+| Concern | How it is handled |
+|---|---|
+| Telegram edit rate (~1/sec per chat) | Deltas accumulate; a coalescing timer flushes every `STREAM_EDIT_MS` (default 1200ms) |
+| 429 from Telegram | `retry_after` is read off the error and added to the flush interval |
+| Half-written markdown | Streaming edits go out with no `parse_mode`; only the final text goes through `editMessageSafe()` (Markdown) |
+| Answers past 4096 chars | The live view follows the **tail** (`…` + last 3800 chars); the final text still goes through `sendLongMessage()` |
+| A dropped delta | When a block closes, the `assistant` event's text replaces the accumulated block — it is the authoritative copy |
+| A stream edit landing after the final text | Flushes are serialized on one promise chain; the `result` handler awaits it before writing the final message |
+| Turns with tool calls | Every text block of the turn is kept, joined with a blank line, so the interim narrative doesn't vanish at the end |
+
+`streamMode` (per chat, `/stream` or the Stream row in `/settings`):
+
+- `off` — pre-streaming behavior: one status message, then the whole answer
+- `on` — the answer is typed out (default)
+- `live` — plus the reasoning typed into the status message while Claude thinks
+  (throttled by `STREAM_THINK_MS`, default 2500ms)
+
+Env overrides: `STREAM_EDIT_MS`, `STREAM_THINK_MS`.

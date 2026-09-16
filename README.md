@@ -81,6 +81,7 @@ Claudegram turns your Telegram into a mobile interface for Claude CLI running on
 | Command | Description |
 |---------|-------------|
 | `/sessions` | Browse & resume past sessions (Telegram + Mac) |
+| `/askhistory <q>` | Ask a question about your own past sessions |
 | `/session [on\|off]` | Toggle session mode (context) vs on-demand |
 | `/persist [on\|off]` | Keep session alive after bot restart |
 | `/bookmark [text]` | Save session with resume button |

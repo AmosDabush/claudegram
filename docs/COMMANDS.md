@@ -17,12 +17,13 @@ A Telegram bot that provides a full interface to Claude Code CLI on macOS. Chat 
 9. [Parallel Processing](#parallel-processing)
 10. [Thought Mode](#thought-mode)
 11. [Settings and Menus](#settings-and-menus)
-12. [Bookmarks](#bookmarks)
-13. [Session Transfer](#session-transfer)
-14. [System Commands](#system-commands)
-15. [Text and Voice Styles](#text-and-voice-styles)
-16. [Image Analysis](#image-analysis)
-17. [Troubleshooting](#troubleshooting)
+12. [Ask History](#ask-history)
+13. [Bookmarks](#bookmarks)
+14. [Session Transfer](#session-transfer)
+15. [System Commands](#system-commands)
+16. [Text and Voice Styles](#text-and-voice-styles)
+17. [Image Analysis](#image-analysis)
+18. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -909,6 +910,39 @@ Just type a message to chat!
 
 ---
 
+## Ask History
+
+Ask a question about your own past sessions and get an answer, not a list of results.
+
+```
+/askhistory why did we go back to showing days instead of hours
+/askhistory                     (asks you what to look for)
+```
+
+`/ask` and `/ask_history` do the same thing. There is also an **✦ Ask History** button on the main menu and on the Claude session panel.
+
+### What comes back
+
+An answer with numbered citations, then a source list, then a Resume button for each session that was quoted - tapping one opens that session in iTerm on the Mac. So an answer read on the phone is one tap away from the real transcript.
+
+The whole thing takes around 30-45 seconds. Progress is reported live in a single message that keeps updating: the terms being searched, which ones were thrown out as too common, and the real identifiers dug out of the archive along the way.
+
+### How it finds things
+
+Plain keyword search fails here, because the answer is usually filed under a name the question did not guess. So:
+
+- The planner is handed a catalog of your session titles and notes, so its search terms come from your actual vocabulary rather than invention. It can also nominate sessions on a hunch from the titles alone.
+- Terms appearing in most sessions are dropped as noise, and rare terms count for more. Otherwise one generic word like "revert" drowns everything.
+- A second round harvests the real identifiers out of whatever the first round found - column names, ticket ids, branches - and searches again. This is what rescues a question whose subject turns out to be called something else entirely.
+- Only the top sessions are read in full, with the messages either side of each match. A session that matched only inside a tool payload is discarded.
+- When excerpts disagree, the later one wins and the answer says so, because decisions here get reversed over time.
+
+### Notes
+
+- Answers are grounded in your sessions only. If the archive does not cover it, it says so instead of guessing.
+- Requires the sessions UI server on the Mac. If it is not running, the bot starts it.
+- One question at a time per chat.
+
 ## Bookmarks
 
 Bookmarks let you save a snapshot reference to a session that you can resume later with a single tap.
@@ -1238,6 +1272,7 @@ If no caption is provided, the default prompt is "Please analyze this image".
 | `/session` | Toggle session/on-demand |
 | `/sessions` | Browse and resume sessions |
 | `/resume` | Same as /sessions |
+| `/askhistory <q>` | Answer a question from your past sessions |
 | `/persist` | Toggle session persistence |
 | `/mode` | Change permission mode |
 | `/fast <q>` | Quick answer without tools |

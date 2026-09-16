@@ -25,6 +25,7 @@ const claudeCommands = require('./lib/commands/claude');
 const parallelCommands = require('./lib/commands/parallel');
 const bookmarkCommands = require('./lib/commands/bookmark');
 const helpCommands = require('./lib/commands/help');
+const askCommands = require('./lib/commands/ask');
 
 // ===== Kill previous instance if exists =====
 const { execSync } = require('child_process');
@@ -141,6 +142,7 @@ bot.setMyCommands([
   { command: 'claude', description: '🤖 Claude session & settings' },
   { command: 'model', description: '🧠 Switch Claude model' },
   { command: 'sessions', description: '📚 Browse & resume sessions' },
+  { command: 'askhistory', description: '✦ Ask your own session history' },
   { command: 'projects', description: '📂 Saved projects' },
   { command: 'browse', description: '🗂 Browse folders' },
   { command: 'git', description: '🌿 Git commands' },
@@ -213,6 +215,7 @@ voiceCommands.register(bot, isAuthorized);
 claudeCommands.register(bot, isAuthorized);
 parallelCommands.register(bot, isAuthorized);
 bookmarkCommands.register(bot, isAuthorized);
+askCommands.register(bot, isAuthorized);
 helpCommands.register(bot, isAuthorized);
 
 // ===== Help commands =====
@@ -329,12 +332,34 @@ bot.onText(/\/settings/, (msg) => {
   sendQuickSettings(bot, msg.chat.id);
 });
 
+// /stream [off|on|live] - how much of the answer you watch being written
+bot.onText(/^\/stream(?:\s+(off|on|live))?$/, (msg, match) => {
+  if (!isAuthorized(msg)) return;
+  const chatId = msg.chat.id;
+  const userState = getUserState(chatId);
+  const value = match[1];
+  if (!value) {
+    const current = userState.streamMode || 'on';
+    bot.sendMessage(chatId,
+      `⌨️ Stream: *${current}*\n\n` +
+      `\`/stream on\` — type the answer out as it is written\n` +
+      `\`/stream live\` — also type out the thinking\n` +
+      `\`/stream off\` — wait for the finished answer`,
+      { parse_mode: 'Markdown' });
+    return;
+  }
+  userState.streamMode = value;
+  require('./lib/state').scheduleSave();
+  bot.sendMessage(chatId, `⌨️ Stream: *${value}*`, { parse_mode: 'Markdown' });
+});
+
 function sendQuickSettings(bot, chatId, messageId = null) {
   const userState = getUserState(chatId);
 
   // Current values
   const voiceMode = userState.voiceMode || 'off';
   const thoughtMode = userState.thoughtMode || 'off';
+  const streamMode = userState.streamMode || 'on';
   const sessionMode = userState.sessionMode ? 'session' : 'demand';
   const permMode = userState.currentMode || 'default';
   const interactive = userState.interactiveMode ? 'on' : 'off';
@@ -344,6 +369,7 @@ function sendQuickSettings(bot, chatId, messageId = null) {
   // Icons for current state
   const voiceIcons = { off: '🔇', on: '🔊', auto: '🔊' };
   const thoughtIcons = { off: '🔇', on: '🧠', auto: '✨' };
+  const streamIcons = { off: '🔇', on: '⌨️', live: '🧠' };
   const sessionIcons = { demand: '⚡', session: '💬' };
   const permIcons = { default: '🔒', fast: '⚡', plan: '📋', yolo: '🔥' };
   const interactiveIcons = { off: '⚡', on: '🔄' };
@@ -380,6 +406,13 @@ function sendQuickSettings(bot, chatId, messageId = null) {
       { text: thoughtMode === 'off' ? '● off' : 'off', callback_data: 'qset:thought:off' },
       { text: thoughtMode === 'on' ? '● on' : 'on', callback_data: 'qset:thought:on' },
       { text: thoughtMode === 'auto' ? '● auto' : 'auto', callback_data: 'qset:thought:auto' }
+    ],
+    // Stream row - type the answer out as it is written
+    [
+      { text: `Stream: ${streamIcons[streamMode] || '⌨️'}`, callback_data: `qset:stream:${streamMode}` },
+      { text: streamMode === 'off' ? '● off' : 'off', callback_data: 'qset:stream:off' },
+      { text: streamMode === 'on' ? '● on' : 'on', callback_data: 'qset:stream:on' },
+      { text: streamMode === 'live' ? '● live' : 'live', callback_data: 'qset:stream:live' }
     ],
     // Session row
     [
@@ -429,6 +462,7 @@ function sendAllMenu(bot, chatId, messageId = null) {
   const interactiveIcon = userState.interactiveMode ? '🔄' : '⚡';
 
   const keyboard = [
+    [{ text: '✦ Ask History', callback_data: 'askhist:ask' }],
     [{ text: '⚙️ Quick Settings', callback_data: 'all:settings' }],
     [{ text: '🤖 Claude AI', callback_data: 'all:claude' }, { text: '🔄 Interactive', callback_data: 'all:interactive' }],
     [{ text: '📂 Navigation', callback_data: 'all:nav' }, { text: '📋 Quick Commands', callback_data: 'all:files' }],
@@ -476,6 +510,7 @@ bot.onText(/\/claude/, async (msg) => {
     ],
     [{ text: '▶️ Resume Last Session', callback_data: 'cmd:resume' }],
     [{ text: '📚 Past Sessions', callback_data: 'cmd:sessions' }],
+    [{ text: '✦ Ask History', callback_data: 'askhist:ask' }],
     [{ text: '🆕 New Session', callback_data: 'cmd:new' }],
     [{ text: `${sessionIcon} Toggle Mode`, callback_data: 'cmd:session' }, { text: '⚙️ Permission', callback_data: 'cmd:mode' }],
     [{ text: `${thoughtIcon} Thought Log`, callback_data: 'cmd:thought' }, { text: '💾 Persist', callback_data: 'cmd:persist' }],
@@ -536,7 +571,7 @@ bot.onText(/\/restart(?:\s+(clean))?/, async (msg, match) => {
     try { fs.writeFileSync(path.join(__dirname, 'data', 'sessions.json'), '{}'); } catch (e) {}
   } else {
     await bot.sendMessage(chatId, '🔄 Restarting bot (keeping session for resume)...');
-    resetAllUsersRuntime({ killProc: true, clearSessions: false, keepSessionId: false });
+    resetAllUsersRuntime({ killProc: true, clearSessions: false, keepSessionId: true });
   }
 
   // Save state before restart
@@ -790,6 +825,7 @@ bot.on('callback_query', async (query) => {
   if (navigationCommands.handleCallback(bot, query, userState)) return;
   if (gitCommands.handleCallback(bot, query, userState)) return;
   if (voiceCommands.handleCallback(bot, query, userState)) return;
+  if (askCommands.handleCallback(bot, query)) return;   // own namespace, claimed before the generic cmd: handlers
   if (await claudeCommands.handleCallback(bot, query, userState)) return;  // async handler needs await
   if (parallelCommands.handleCallback(bot, query, userState)) return;
   if (helpCommands.handleCallback(bot, query, userState)) return;
@@ -808,6 +844,9 @@ bot.on('callback_query', async (query) => {
       scheduleSave();
     } else if (setting === 'thought') {
       userState.thoughtMode = value;
+      scheduleSave();
+    } else if (setting === 'stream') {
+      userState.streamMode = value;
       scheduleSave();
     } else if (setting === 'session') {
       userState.sessionMode = value === 'session';
@@ -1144,6 +1183,9 @@ bot.on('message', async (msg) => {
 
   // Check if this is a bookmark reply first
   if (bookmarkCommands.handleReply(msg, bot)) return;
+
+  // Or an /ask question reply
+  if (askCommands.handleReply(msg, bot)) return;
 
   // Or a session-note reply from the management card
   if (claudeCommands.handleNoteReply(msg, bot)) return;

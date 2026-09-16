@@ -53,6 +53,8 @@ write_plist() {
   </array>
   <key>StartInterval</key><integer>60</integer>
   <key>RunAtLoad</key><true/>
+  <!-- Do not SIGTERM the revived bot when the caretaker round exits. -->
+  <key>AbandonProcessGroup</key><true/>
   <key>StandardOutPath</key><string>$STATE_DIR/waker-agent.log</string>
   <key>StandardErrorPath</key><string>$STATE_DIR/waker-agent.log</string>
 </dict>

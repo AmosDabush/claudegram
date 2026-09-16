@@ -37,3 +37,7 @@ temp_audio_*.wav
 # User data (contains personal info)
 data/
 !data/.gitkeep
+
+# Local backup snapshots
+*.bak
+*.bak-*
