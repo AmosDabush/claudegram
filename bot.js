@@ -26,6 +26,7 @@ const parallelCommands = require('./lib/commands/parallel');
 const bookmarkCommands = require('./lib/commands/bookmark');
 const helpCommands = require('./lib/commands/help');
 const askCommands = require('./lib/commands/ask');
+const attachCommands = require('./lib/commands/attach');
 
 // ===== Kill previous instance if exists =====
 const { execSync } = require('child_process');
@@ -153,12 +154,16 @@ bot.setMyCommands([
   { command: 'close', description: '👋 Close bot (all instances)' },
   { command: 'cancel', description: '🛑 Cancel current request' },
   { command: 'resume_pinned', description: '📌 Resume pinned session' },
+  { command: 'forceresume', description: '🔓 Take over a session open elsewhere' },
   { command: 'move_to_mac', description: '🖥 Move to Mac terminal' },
   { command: 'bookmark', description: '🔖 Bookmark (save)' },
   { command: 'bookmarks', description: '🔖 Bookmarks (show all)' },
   { command: 'pin', description: '📌 Pin current session' },
   { command: 'anydesk', description: '🕹 AnyDesk' },
-  { command: 'waker', description: '⏰ Bot waker (status / set minutes)' }
+  { command: 'waker', description: '⏰ Bot waker (status / set minutes)' },
+  { command: 'pipe', description: '🔀 Pipe: live-attach vs resume' },
+  { command: 'attach', description: '🔗 Attach to a live session' },
+  { command: 'detach', description: '⏹ Detach (back to resume)' }
 ]).then(() => {
   console.log('✅ Bot commands menu set');
 }).catch(err => {
@@ -217,6 +222,11 @@ parallelCommands.register(bot, isAuthorized);
 bookmarkCommands.register(bot, isAuthorized);
 askCommands.register(bot, isAuthorized);
 helpCommands.register(bot, isAuthorized);
+attachCommands.register(bot, isAuthorized);
+attachCommands.setRenderers({
+  menu:   (b, c, m) => sendAllMenu(b, c, m),
+  claude: (b, c, m) => sendClaudeSessionPanel(b, c, m)
+});
 
 // ===== Help commands =====
 bot.onText(/\/start$/, (msg) => {  // Only match /start without parameters
@@ -292,6 +302,12 @@ Just type → Send to Claude
 /interactive - Toggle interactive mode
 /terminal - iTerm/background display
 /resume - Resume last session
+
+*🔗 Live Session Pipe:*
+/pipe - switch ATTACH ↔ RESUME
+/attach - pick a live session to drive
+/detach - stop driving, back to resume
+_From the terminal:_ /remote-telegram-current-session · /remote-telegram-all
 
 *🔀 Parallel:*
 /perspectives [n] <q> - Get n viewpoints
@@ -462,8 +478,9 @@ function sendAllMenu(bot, chatId, messageId = null) {
   const interactiveIcon = userState.interactiveMode ? '🔄' : '⚡';
 
   const keyboard = [
+    attachCommands.toggleRow('menu'),
     [{ text: '✦ Ask History', callback_data: 'askhist:ask' }],
-    [{ text: '⚙️ Quick Settings', callback_data: 'all:settings' }],
+    [{ text: '🔗 Remote Ses', callback_data: 'all:remote' }, { text: '⚙️ Quick Settings', callback_data: 'all:settings' }],
     [{ text: '🤖 Claude AI', callback_data: 'all:claude' }, { text: '🔄 Interactive', callback_data: 'all:interactive' }],
     [{ text: '📂 Navigation', callback_data: 'all:nav' }, { text: '📋 Quick Commands', callback_data: 'all:files' }],
     [{ text: '🌿 Git', callback_data: 'all:git' }, { text: '🔀 Parallel', callback_data: 'all:parallel' }],
@@ -471,9 +488,11 @@ function sendAllMenu(bot, chatId, messageId = null) {
     [{ text: '🛑 Cancel Request', callback_data: 'cmd:cancel' }]
   ];
 
+  const pipe = attachCommands.getMode() === 'attach' ? '🔗 Remote Ses' : '📚 Resume Sessions';
   const text = `🤖 *Claude Code Bot*\n\n` +
     `📍 *${userState.currentProject}*\n` +
-    `${modeIcon} ${userState.sessionMode ? 'Session' : 'On-Demand'} | ${voiceIcon}\n\n` +
+    `${modeIcon} ${userState.sessionMode ? 'Session' : 'On-Demand'} | ${voiceIcon}\n` +
+    `Messages go to: *${pipe}*\n\n` +
     `Select a category:`;
 
   if (messageId) {
@@ -492,22 +511,22 @@ function sendAllMenu(bot, chatId, messageId = null) {
 }
 
 // ===== Claude Session Menu =====
-bot.onText(/\/claude/, async (msg) => {
-  if (!isAuthorized(msg)) return;
-
-  const chatId = msg.chat.id;
+// The Claude session panel, as a function so the pipe toggle can redraw it.
+function sendClaudeSessionPanel(bot, chatId, messageId = null) {
   const userState = getUserState(chatId);
   const sessionIcon = userState.sessionMode ? '💬' : '⚡';
   const interactiveStatus = userState.interactiveMode ? 'ON' : 'OFF';
   const terminalStatus = userState.showTerminal ? 'iTerm' : 'Background';
   const procStatus = userState.interactiveProc ? '*(running)*' : '*(stopped)*';
-
   const thoughtIcon = userState.showProcessLog ? '🧠' : '🔇';
+
   const keyboard = [
+    attachCommands.toggleRow('claude'),
     [
       { text: `🔄 Interactive: ${interactiveStatus}`, callback_data: 'cmd:interactive' },
       { text: `🖥 ${userState.showTerminal ? 'iTerm' : 'BG'}`, callback_data: 'cmd:terminal' }
     ],
+    [{ text: '🔗 Remote Ses', callback_data: 'all:remote' }],
     [{ text: '▶️ Resume Last Session', callback_data: 'cmd:resume' }],
     [{ text: '📚 Past Sessions', callback_data: 'cmd:sessions' }],
     [{ text: '✦ Ask History', callback_data: 'askhist:ask' }],
@@ -520,15 +539,24 @@ bot.onText(/\/claude/, async (msg) => {
     [{ text: '🛑 Cancel', callback_data: 'cmd:cancel' }]
   ];
 
-  bot.sendMessage(chatId, `🤖 *Claude Session*\n\n` +
+  const pipe = attachCommands.getMode() === 'attach' ? '🔗 Remote Ses' : '📚 Resume Sessions';
+  const text = `🤖 *Claude Session*\n\n` +
+    `Messages go to: *${pipe}*\n` +
     `🔄 Interactive: ${interactiveStatus} ${procStatus}\n` +
     `🖥 Display: ${terminalStatus}\n\n` +
     `Interactive = Claude runs persistently\n` +
     `iTerm = See Claude in visible window\n\n` +
-    `Just type a message to chat!`, {
-    parse_mode: 'Markdown',
-    reply_markup: { inline_keyboard: keyboard }
-  });
+    `Just type a message to chat!`;
+
+  const opts = { parse_mode: 'Markdown', reply_markup: { inline_keyboard: keyboard } };
+  return messageId
+    ? bot.editMessageText(text, { chat_id: chatId, message_id: messageId, ...opts }).catch(() => {})
+    : bot.sendMessage(chatId, text, opts);
+}
+
+bot.onText(/\/claude/, async (msg) => {
+  if (!isAuthorized(msg)) return;
+  sendClaudeSessionPanel(bot, msg.chat.id);
 });
 
 // ===== Close command - kill all bot instances =====
@@ -825,6 +853,7 @@ bot.on('callback_query', async (query) => {
   if (navigationCommands.handleCallback(bot, query, userState)) return;
   if (gitCommands.handleCallback(bot, query, userState)) return;
   if (voiceCommands.handleCallback(bot, query, userState)) return;
+  if (attachCommands.handleCallback(bot, query)) return;   // live-session pipe
   if (askCommands.handleCallback(bot, query)) return;   // own namespace, claimed before the generic cmd: handlers
   if (await claudeCommands.handleCallback(bot, query, userState)) return;  // async handler needs await
   if (parallelCommands.handleCallback(bot, query, userState)) return;
@@ -882,6 +911,11 @@ bot.on('callback_query', async (query) => {
   }
 
   // Handle /all menu callbacks
+  if (data === 'all:remote') {
+    attachCommands.handleCallback(bot, query);
+    return;
+  }
+
   if (data.startsWith('all:')) {
     handleAllMenuCallback(bot, query, userState);
     return;
@@ -1181,6 +1215,21 @@ bot.on('message', async (msg) => {
     // Ignore errors - not critical
   }
 
+  // Append-only inbound journal. last_activity is a single overwritten
+  // timestamp, so when messages go missing there is nothing left to inspect:
+  // you cannot tell "nothing was sent" from "it was sent and dropped". One
+  // line per inbound message, written before any auth check or routing, makes
+  // that answerable after the fact.
+  try {
+    const kind = msg.text ? 'text' : Object.keys(msg).find(k =>
+      ['voice', 'photo', 'document', 'audio', 'video', 'sticker'].includes(k)) || 'other';
+    const preview = (msg.text || '').replace(/\s+/g, ' ').slice(0, 80);
+    fs.appendFileSync(
+      path.join(path.dirname(FILES.sessions), 'inbound.log'),
+      `${new Date().toISOString()} chat=${msg.chat.id} from=${msg.from?.id} ${kind} ${preview}\n`
+    );
+  } catch (e) {}
+
   // Check if this is a bookmark reply first
   if (bookmarkCommands.handleReply(msg, bot)) return;
 
@@ -1189,6 +1238,9 @@ bot.on('message', async (msg) => {
 
   // Or a session-note reply from the management card
   if (claudeCommands.handleNoteReply(msg, bot)) return;
+
+  // Attached to a live session? Inject there instead of resuming.
+  if (attachCommands.maybeRoute(bot, msg)) return;
 
   await claudeCommands.handleMessage(bot, msg, isAuthorized);
 });

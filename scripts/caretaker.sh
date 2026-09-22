@@ -54,6 +54,7 @@ heartbeat_fresh() {
 }
 
 revive() {
+  rm -f "$STATE_DIR/deaf-strikes"
   bash "$BOT_DIR/start.sh" >> "$LOG" 2>&1
   sleep 4
 }
@@ -61,6 +62,16 @@ revive() {
 # ---- Schedule the next wake, aligned to the clock for the current interval ----
 # 15 => :00/:15/:30/:45, 5 => :00/:05/.., 3 => every 3 min. Needs passwordless
 # sudo for pmset (set up by 'waker-ctl install'); degrades quietly if not allowed.
+# The warm relay daemon backs the live-session pipe; heal it like the bot.
+heal_relay_daemon() {
+  local rpid="$STATE_DIR/relay-daemon.pid"
+  [ -f "$STATE_DIR/attached.json" ] || return 0          # only when in use
+  if [ -f "$rpid" ] && ps -p "$(cat "$rpid" 2>/dev/null)" >/dev/null 2>&1; then return 0; fi
+  rm -f "$STATE_DIR/relay.sock"
+  nohup python3 "$BOT_DIR/scripts/attach-relay-daemon.py" >/dev/null 2>&1 &
+  log "relay daemon revived"
+}
+
 schedule_next_wake() {
   local m sec now next when
   m=$(read_interval)
@@ -87,7 +98,44 @@ schedule_next_wake() {
 ALERT="$STATE_DIR/waker.alert"
 REMIND_SEC=1800   # if still down, remind at most once every 30 min
 
-healthy() { bot_process_alive && heartbeat_fresh; }
+# ---- Is the bot still DRAINING Telegram? ----
+# heartbeat_fresh only proves the event loop spins: a setInterval keeps firing
+# whether or not the getUpdates loop is still fetching. A bot can be alive,
+# breathing, and completely deaf — that failure mode looked "healthy" here for
+# 26 consecutive rounds. Telegram itself is the only witness: if it is holding
+# updates the bot has not collected, the bot is not listening.
+# Two consecutive strikes before acting, so a turn that is mid-flight (the bot
+# legitimately pauses polling while it answers) is not mistaken for deafness.
+DEAF_FILE="$STATE_DIR/deaf-strikes"
+
+pending_updates() {
+  [ -f "$BOT_DIR/.env" ] || { echo -1; return; }
+  local token
+  token=$(grep -m1 '^BOT_TOKEN=' "$BOT_DIR/.env" | cut -d= -f2- | tr -d '"'"'"' \r')
+  [ -n "$token" ] || { echo -1; return; }
+  curl -s --max-time 10 "https://api.telegram.org/bot${token}/getWebhookInfo" \
+    | python3 -c "import sys,json
+try: print(json.load(sys.stdin).get('result',{}).get('pending_update_count',-1))
+except Exception: print(-1)" 2>/dev/null || echo -1
+}
+
+not_deaf() {
+  local pending strikes
+  pending=$(pending_updates)
+  # -1 = could not ask (offline, no token). Never punish the bot for that.
+  if [ "$pending" -le 0 ] 2>/dev/null; then
+    rm -f "$DEAF_FILE"
+    return 0
+  fi
+  strikes=$(cat "$DEAF_FILE" 2>/dev/null | tr -dc '0-9')
+  [ -z "$strikes" ] && strikes=0
+  strikes=$((strikes + 1))
+  echo "$strikes" > "$DEAF_FILE"
+  log "telegram holding $pending update(s) the bot has not drained — strike $strikes/2"
+  [ "$strikes" -lt 2 ]
+}
+
+healthy() { bot_process_alive && heartbeat_fresh && not_deaf; }
 
 if healthy; then
   log "ok — bot healthy"
@@ -96,7 +144,13 @@ if healthy; then
     rm -f "$ALERT"
   fi
 else
-  if bot_process_alive; then log "bot STUCK — restarting"; else log "bot DOWN — reviving"; fi
+  if ! bot_process_alive; then
+    log "bot DOWN — reviving"
+  elif ! heartbeat_fresh; then
+    log "bot STUCK (event loop frozen) — restarting"
+  else
+    log "bot DEAF (alive and breathing, but not draining Telegram) — restarting"
+  fi
   revive
   if healthy; then
     log "revived"
@@ -122,3 +176,5 @@ else
 fi
 
 schedule_next_wake
+
+heal_relay_daemon

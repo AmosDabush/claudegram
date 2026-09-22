@@ -41,3 +41,8 @@ data/
 # Local backup snapshots
 *.bak
 *.bak-*
+
+# Working snapshots / build junk
+*.pre-*
+*.with-status-*
+__pycache__/

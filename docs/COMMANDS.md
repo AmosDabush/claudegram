@@ -1490,3 +1490,26 @@ All persistent data is stored in the `data/` directory:
 - `saveNow()` is called on process exit for immediate persistence
 - Runtime-only fields (process references, timers, etc.) are never written to disk
 - `interactiveSessionId` is preserved across restarts for auto-resume capability
+
+
+## Live Session Pipe
+
+Drive a session that is **already running** instead of resuming a dead one.
+`--resume` starts a new process over an old transcript; this delivers your
+message into the live process, so there is one session, not two.
+
+*In Telegram*
+- `/attach` — pick a live session from a list
+- `/detach` — stop driving it
+- `/pipe` — switch between **ATTACH** and **RESUME**
+
+*From a terminal session*
+- `/remote-telegram-current-session` — attach the session you are sitting in
+- `/remote-telegram-all` — push the whole picker to Telegram
+
+**The pipe is a hard switch, not a fallback.** In ATTACH, a failed delivery
+reports the error and stays put — it never quietly reroutes your message into a
+resumed session. Switch back with `/pipe` when you want the normal flow.
+
+Sending takes about a second; the target picks the message up on its next turn.
+Every attempt is logged to `data/attach-relay.log`.
