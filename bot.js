@@ -133,7 +133,7 @@ process.on('unhandledRejection', (err) => {
   if (err && err.stack) console.error(err.stack);
 });
 
-// Set bot commands menu
+// Set bot commands menu. Named so the group bot can register the same list.
 const BOT_COMMANDS = [
   { command: 'menu', description: '📱 Main menu (all categories)' },
   { command: 'settings', description: '⚙️ Quick settings' },
@@ -1276,33 +1276,26 @@ async function handleIncomingMessage(bot, msg) {
 }
 
 // ===== Wire the handlers to the main bot =====
-// Both bots can sit in the same group, so they need a rule for who owns what or they
-// each answer every message. The main bot owns direct messages; the group bot owns
-// groups. Without the split you get two of everything.
-const isPrivate = (chat) => !chat || chat.type === 'private';
+// Both bots can sit in the same supergroup, so without a rule for who owns what they
+// each answer every message. The main bot owns direct chats; the group bot owns groups.
+//
+// This has to filter the update itself, not sit in a 'message' listener. Telegram
+// dispatches onText handlers from processUpdate: it emits 'message' first and only then
+// walks the regexp callbacks, so a listener that returns early guards nothing — every
+// slash command still runs, and answers in whichever chat the handler picks.
+const mainProcessUpdate = bot.processUpdate.bind(bot);
+bot.processUpdate = (update) => {
+  if (process.env.GROUP_BOT_TOKEN) {
+    const holder = update.message || update.edited_message || update.channel_post ||
+      (update.callback_query && update.callback_query.message);
+    const chat = holder && holder.chat;
+    if (chat && chat.type !== 'private') return;
+  }
+  return mainProcessUpdate(update);
+};
 
-// The primary session is reachable from two places: the group's General topic and the
-// old direct chat. Both are the same conversation, so both are keyed to the group and
-// every reply is sent to both. Set once the group bot knows which group it is in.
-let mirror = null;
-let mirrorDmChat = null;
-let mirrorPrimaryChat = null;
-
-const isPrimaryDm = (chat) => mirror && isPrivate(chat) && String(chat.id) === String(mirrorDmChat);
-
-bot.on('message', (msg) => {
-  // A direct message to the primary session is routed through the group bot so both
-  // windows stay identical; the mirror sends the reply back here as well.
-  if (isPrimaryDm(msg.chat)) return;
-  if (GROUP_BOT_TOKEN && !isPrivate(msg.chat)) return;
-  handleIncomingMessage(bot, msg);
-});
-bot.on('callback_query', (query) => {
-  const chat = query.message && query.message.chat;
-  if (isPrimaryDm(chat)) return;
-  if (GROUP_BOT_TOKEN && !isPrivate(chat)) return;
-  handleCallbackQuery(bot, query);
-});
+bot.on('message', (msg) => handleIncomingMessage(bot, msg));
+bot.on('callback_query', (query) => handleCallbackQuery(bot, query));
 
 // ===== Optional second bot: one supergroup, one topic per session =====
 // Same process, same session machinery, second door. Without the token nothing below
@@ -1320,7 +1313,7 @@ if (GROUP_BOT_TOKEN) {
 
   raw.on('polling_error', (err) => console.log(`[Polling:group] ${err.message || err}`));
 
-  // Without its own registration the new bot has no slash menu at all. The default
+  // Without its own registration the second bot has no slash menu at all. The default
   // scope does not reach group chats, so groups are registered explicitly too.
   raw.setMyCommands(BOT_COMMANDS)
     .then(() => raw.setMyCommands(BOT_COMMANDS, { scope: { type: 'all_group_chats' } }))
@@ -1347,61 +1340,12 @@ if (GROUP_BOT_TOKEN) {
     chatHolder.chat.id = chatKeyOf(chatHolder);
   };
 
-  // First group we see becomes the mirrored one. The General topic there and the direct
-  // chat are then the same session, with every reply going to both.
-  // Layering matters. The topic wrapper must sit *inside* the mirror: the mirror decides
-  // what to duplicate by looking at the chat key, and the wrapper is what turns a key
-  // back into a chat plus a thread. Wrapping the other way round hands the mirror an
-  // already-flattened group id, so every topic looks like the primary one and the whole
-  // group ends up duplicated into the direct chat.
-  const topicAware = wrapBot(raw);
-
-  const setPrimary = (chatKey) => {
-    if (!chatKey) return;
-    const { createMirror } = require('./lib/mirror-bot');
-    mirrorDmChat = ALLOWED_USER_IDS[0];
-    mirrorPrimaryChat = chatKey;
-    mirror = createMirror({
-      primary: topicAware,
-      secondary: bot,
-      primaryChat: chatKey,
-      secondaryChat: mirrorDmChat,
-    });
-    groupBot = mirror.wrap(topicAware);
-    console.log(`✅ Primary session is ${chatKey}, mirrored with the direct chat`);
-  };
-
-  // Until told otherwise the General topic of the first group we see is the primary one.
-  const armMirror = (chatId) => {
-    if (mirror || !chatId) return;
-    setPrimary(chatId);
-  };
-
-  // Point the mirror at whichever topic this was sent from.
-  raw.onText(/^\/primary$/, (msg) => {
-    if (!isAuthorized(msg) || isPrivate(msg.chat)) return;
-    const key = chatKeyOf(msg);
-    setPrimary(key);
-    groupBot.sendMessage(key, '📌 This topic is now the primary session. It is mirrored with the direct chat.');
-  });
-
   raw.on('message', (msg) => {
-    if (isPrivate(msg.chat)) return; // direct messages belong to the main bot
-    armMirror(msg.chat.id);
     retarget(msg);
     handleIncomingMessage(groupBot, msg);
   });
 
-  // A direct message to the primary session is handled here so it shares the General
-  // topic's state and its reply reaches both windows.
-  bot.on('message', (msg) => {
-    if (!isPrimaryDm(msg.chat)) return;
-    msg.chat.id = mirror ? mirrorPrimaryChat : msg.chat.id;
-    handleIncomingMessage(groupBot, msg);
-  });
-
   raw.on('callback_query', (query) => {
-    if (isPrivate(query.message && query.message.chat)) return;
     retarget(query.message);
     handleCallbackQuery(groupBot, query);
   });
