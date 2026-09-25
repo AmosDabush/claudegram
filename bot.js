@@ -9,9 +9,10 @@ const fs = require('fs');
 const path = require('path');
 
 // Load modules
+const platform = require('./lib/platform');
 const { FILES, TTS_ENGINES, VOICE_CHUNK_PRESETS } = require('./lib/config');
 const { getUserState, getAllUserStates, saveNow, getProjects, setSessionsModule, restoreActiveSessions, resetUserRuntime, resetAllUsersRuntime } = require('./lib/state');
-const { cleanupTempFiles, runQuickCommand, isGitRepo } = require('./lib/utils');
+const { cleanupTempFiles, runQuickCommand, isGitRepo, tailFile } = require('./lib/utils');
 const sessions = require('./lib/sessions');
 
 // Connect sessions module to state for persistence
@@ -29,24 +30,19 @@ const askCommands = require('./lib/commands/ask');
 const attachCommands = require('./lib/commands/attach');
 
 // ===== Kill previous instance if exists =====
-const { execSync } = require('child_process');
+// Telegram serves getUpdates to one consumer per token, so a surviving old
+// process does not merely waste memory — the two fight over every update and
+// both get 409s. This has to succeed before polling starts.
 try {
   if (fs.existsSync(FILES.pid)) {
     const oldPid = fs.readFileSync(FILES.pid, 'utf-8').trim();
     if (oldPid && oldPid !== process.pid.toString()) {
-      try {
-        execSync(`kill ${oldPid} 2>/dev/null`);
-        console.log(`Killed previous instance (PID: ${oldPid})`);
-      } catch (e) {}
+      if (platform.killPid(oldPid)) console.log(`Killed previous instance (PID: ${oldPid})`);
     }
   }
   // Also kill any other bot.js processes
-  const otherPids = execSync(`pgrep -f "node.*bot.js" 2>/dev/null || true`).toString().trim().split('\n').filter(p => p && p !== process.pid.toString());
-  for (const pid of otherPids) {
-    try {
-      execSync(`kill ${pid} 2>/dev/null`);
-      console.log(`Killed orphan instance (PID: ${pid})`);
-    } catch (e) {}
+  for (const pid of platform.findProcesses(['node', 'bot.js'])) {
+    if (platform.killPid(pid)) console.log(`Killed orphan instance (PID: ${pid})`);
   }
 } catch (e) {}
 
@@ -608,16 +604,20 @@ bot.onText(/\/restart(?:\s+(clean))?/, async (msg, match) => {
   // Save chat ID for restart notification
   fs.writeFileSync(FILES.restartNotify, chatId.toString());
 
-  // Restart via start.sh to get wrapper + caffeinate back
+  // Restart through the launcher, which brings the wrapper back with us
+  // (and caffeinate on the Mac).
   const { spawn } = require('child_process');
   setTimeout(() => {
-    spawn('bash', ['start.sh'], {
+    const launcher = platform.IS_WIN
+      ? { file: 'powershell.exe', args: ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', 'start.ps1'] }
+      : { file: 'bash', args: ['start.sh'] };
+    spawn(launcher.file, launcher.args, {
       cwd: __dirname,
       detached: true,
       stdio: 'ignore'
     }).unref();
 
-    // Exit current process (start.sh will kill us anyway, but be clean)
+    // Exit current process (the launcher will kill us anyway, but be clean)
     setTimeout(() => process.exit(0), 500);
   }, 500);
 });
@@ -688,19 +688,17 @@ bot.on('photo', async (msg) => {
     const prompt = `${caption}\n\nThe image is at: ${localPath}\nPlease read and analyze it.`;
 
     // Use Claude in print mode with the prompt
-    const { exec } = require('child_process');
-    const modeFlag = require('./lib/utils').getModeFlag(userState.currentMode);
-    const escapedPrompt = prompt.replace(/'/g, "'\\''");
+    const { exec, execFile } = require('child_process');
+    const { getModeFlag, getModeArgs } = require('./lib/utils');
 
-    const cmd = `claude -p '${escapedPrompt}' ${modeFlag} < /dev/null`;
-    console.log(`📷 Running: ${cmd.substring(0, 100)}...`);
-
-    exec(cmd, {
+    const opts = {
       cwd: userState.currentPath,
-      env: { ...process.env, PATH: `${process.env.HOME}/.local/bin:${process.env.PATH}` },
+      env: { ...process.env, PATH: `${platform.claudeBinDir()}${path.delimiter}${process.env.PATH}` },
       maxBuffer: 10 * 1024 * 1024,
       timeout: 3 * 60 * 1000  // 3 min timeout for image analysis
-    }, async (error, stdout, stderr) => {
+    };
+
+    const onAnalyzed = async (error, stdout, stderr) => {
       // Delete status message
       try { await bot.deleteMessage(chatId, statusMsg.message_id); } catch (e) {}
 
@@ -732,7 +730,22 @@ bot.on('photo', async (msg) => {
           }
         }
       } catch (e) {}
-    });
+    };
+
+    // Same split as the other claude call sites: macOS keeps its shell string,
+    // Windows spawns by argv. The prompt here embeds a filesystem path, which
+    // on Windows contains backslashes that a shell would eat.
+    if (platform.IS_WIN) {
+      execFile(platform.claudeBin(),
+        ['-p', prompt, ...getModeArgs(userState.currentMode)],
+        { ...opts, stdio: ['ignore', 'pipe', 'pipe'], ...platform.spawnOpts() }, onAnalyzed);
+    } else {
+      const escapedPrompt = prompt.replace(/'/g, "'\\''");
+      const modeFlag = getModeFlag(userState.currentMode);
+      const cmd = `claude -p '${escapedPrompt}' ${modeFlag} < /dev/null`;
+      console.log(`📷 Running: ${cmd.substring(0, 100)}...`);
+      exec(cmd, opts, onAnalyzed);
+    }
   } catch (e) {
     console.log(`📷 Error: ${e.message}`);
     try {
@@ -750,7 +763,7 @@ bot.onText(/\/logs(?:\s+(\d+))?/, async (msg, match) => {
   const lines = parseInt(match[1]) || 50;
 
   try {
-    const output = await runQuickCommand(`tail -${lines} "${FILES.log}"`, process.env.HOME);
+    const output = tailFile(FILES.log, lines);
 
     if (output.length > 4000) {
       const buffer = Buffer.from(output, 'utf-8');
@@ -799,12 +812,17 @@ bot.onText(/\/clearlogs/, async (msg) => {
 
 // /anydesk - wake AnyDesk on the Mac and send back the address to connect to
 async function handleAnydesk(chatId) {
-  const script = path.join(process.env.HOME, '.claude', 'telegram-bot', 'scripts', 'anydesk-up.sh');
+  // anydesk-up.sh drives AnyDesk through AppleScript. There is no Windows
+  // counterpart, so say so rather than failing with a missing-file error.
+  if (!platform.IS_MAC) {
+    return bot.sendMessage(chatId, '🖥 /anydesk זמין רק על המאק.');
+  }
+  const script = path.join(platform.HOME, '.claude', 'telegram-bot', 'scripts', 'anydesk-up.sh');
   await bot.sendMessage(chatId, '🖥 מעיר את AnyDesk על המאק...');
   try {
     // AnyDesk polls up to ~12s to come up, so give the command headroom past
     // runQuickCommand's 10s default — otherwise a cold start gets cut off.
-    const output = await runQuickCommand(`bash "${script}"`, process.env.HOME, 20000);
+    const output = await runQuickCommand(`bash "${script}"`, platform.HOME, 20000);
     const m = output.match(/ID:\s*([0-9]{6,})/);
     if (m) {
       await bot.sendMessage(chatId,
@@ -828,10 +846,16 @@ bot.onText(/\/anydesk/, async (msg) => {
 // /waker - status of the independent bot-waker, or /waker <minutes> to set interval
 bot.onText(/\/waker(?:\s+(\d+))?$/, async (msg, match) => {
   if (!isAuthorized(msg)) return;
-  const script = path.join(process.env.HOME, '.claude', 'telegram-bot', 'scripts', 'waker-ctl.sh');
+  // The waker is a LaunchAgent plus `pmset schedule wake`. On Windows the PC
+  // does not sleep and a Scheduled Task covers startup, so there is nothing
+  // here to report.
+  if (!platform.IS_MAC) {
+    return bot.sendMessage(msg.chat.id, '⏰ /waker זמין רק על המאק — כאן זו משימה מתוזמנת של Windows.');
+  }
+  const script = path.join(platform.HOME, '.claude', 'telegram-bot', 'scripts', 'waker-ctl.sh');
   const sub = match[1] ? `set ${match[1]}` : 'status';
   try {
-    const out = await runQuickCommand(`bash "${script}" ${sub}`, process.env.HOME);
+    const out = await runQuickCommand(`bash "${script}" ${sub}`, platform.HOME);
     bot.sendMessage(msg.chat.id, '⏰ *Waker*\n```\n' + ((out || '(no output)').trim()) + '\n```', { parse_mode: 'Markdown' });
   } catch (e) {
     bot.sendMessage(msg.chat.id, `❌ ${e.message}`);
@@ -1162,7 +1186,7 @@ function handleLogCallback(bot, query, chatId) {
 
   if (data === 'cmd:logs50') {
     bot.answerCallbackQuery(query.id, { text: '/logs 50' });
-    runQuickCommand(`tail -50 "${FILES.log}"`, process.env.HOME).then(output => {
+    Promise.resolve(tailFile(FILES.log, 50)).then(output => {
       if (output.length > 4000) {
         const buffer = Buffer.from(output, 'utf-8');
         bot.sendDocument(chatId, buffer, { caption: '📜 Last 50 lines' }, { filename: 'bot-logs.txt', contentType: 'text/plain' });
@@ -1175,7 +1199,7 @@ function handleLogCallback(bot, query, chatId) {
 
   if (data === 'cmd:logs100') {
     bot.answerCallbackQuery(query.id, { text: '/logs 100' });
-    runQuickCommand(`tail -100 "${FILES.log}"`, process.env.HOME).then(output => {
+    Promise.resolve(tailFile(FILES.log, 100)).then(output => {
       const buffer = Buffer.from(output, 'utf-8');
       bot.sendDocument(chatId, buffer, { caption: '📜 Last 100 lines' }, { filename: 'bot-logs.txt', contentType: 'text/plain' });
     });
