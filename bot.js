@@ -866,7 +866,7 @@ bot.onText(/\/waker(?:\s+(\d+))?$/, async (msg, match) => {
 });
 
 // ===== Callback query handler =====
-bot.on('callback_query', async (query) => {
+async function handleCallbackQuery(bot, query) {
   if (!ALLOWED_USER_IDS.includes(query.from.id)) {
     bot.answerCallbackQuery(query.id, { text: '⛔ Unauthorized' });
     return;
@@ -1004,7 +1004,7 @@ bot.on('callback_query', async (query) => {
     );
     return;
   }
-});
+}
 
 /**
  * Handle /all menu callbacks
@@ -1235,7 +1235,7 @@ function handleLogCallback(bot, query, chatId) {
 }
 
 // ===== Handle regular messages (Claude interaction) =====
-bot.on('message', async (msg) => {
+async function handleIncomingMessage(bot, msg) {
   // Update last activity timestamp for idle detection
   try {
     fs.writeFileSync(FILES.lastActivity, Date.now().toString());
@@ -1271,13 +1271,62 @@ bot.on('message', async (msg) => {
   if (attachCommands.maybeRoute(bot, msg)) return;
 
   await claudeCommands.handleMessage(bot, msg, isAuthorized);
-});
+}
+
+// ===== Wire the handlers to the main bot =====
+bot.on('message', (msg) => handleIncomingMessage(bot, msg));
+bot.on('callback_query', (query) => handleCallbackQuery(bot, query));
+
+// ===== Optional second bot: one supergroup, one topic per session =====
+// Same process, same session machinery, second door. Without the token nothing below
+// runs, so a machine that has not opted in behaves exactly as it always did.
+const GROUP_BOT_TOKEN = process.env.GROUP_BOT_TOKEN;
+let groupBot = null;
+
+if (GROUP_BOT_TOKEN) {
+  const { wrapBot, chatKeyOf } = require('./lib/topic-bot');
+
+  const raw = new TelegramBot(GROUP_BOT_TOKEN, {
+    polling: { autoStart: true, params: { timeout: 30 } }
+  });
+  groupBot = wrapBot(raw);
+
+  raw.on('polling_error', (err) => console.log(`[Polling:group] ${err.message || err}`));
+
+  // Every command module registers against the wrapped bot, so their replies land back
+  // in the topic they were called from without any of them knowing topics exist.
+  navigationCommands.register(groupBot, isAuthorized);
+  gitCommands.register(groupBot, isAuthorized);
+  voiceCommands.register(groupBot, isAuthorized);
+  claudeCommands.register(groupBot, isAuthorized);
+  parallelCommands.register(groupBot, isAuthorized);
+  bookmarkCommands.register(groupBot, isAuthorized);
+  askCommands.register(groupBot, isAuthorized);
+  helpCommands.register(groupBot, isAuthorized);
+  gaggimateCommands.register(groupBot, isAuthorized);
+
+  // Downstream code reads the chat id off the message to key state and to reply.
+  // Swapping in the synthetic key here is what makes each topic its own session —
+  // nothing further down has to change.
+  const retarget = (chatHolder) => {
+    if (!chatHolder || !chatHolder.chat) return;
+    chatHolder.chat.id = chatKeyOf(chatHolder);
+  };
+
+  raw.on('message', (msg) => {
+    retarget(msg);
+    handleIncomingMessage(groupBot, msg);
+  });
+
+  raw.on('callback_query', (query) => {
+    retarget(query.message);
+    handleCallbackQuery(groupBot, query);
+  });
+
+  console.log('✅ Group bot (topic sessions) started');
+}
 
 // ===== Error handling =====
-bot.on('polling_error', (error) => {
-  console.error('Polling error:', error.message);
-});
-
 process.on('uncaughtException', (error) => {
   console.error('Uncaught exception:', error);
 });
