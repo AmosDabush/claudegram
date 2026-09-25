@@ -134,7 +134,7 @@ process.on('unhandledRejection', (err) => {
 });
 
 // Set bot commands menu
-bot.setMyCommands([
+const BOT_COMMANDS = [
   { command: 'menu', description: '📱 Main menu (all categories)' },
   { command: 'settings', description: '⚙️ Quick settings' },
   { command: 'claude', description: '🤖 Claude session & settings' },
@@ -161,7 +161,9 @@ bot.setMyCommands([
   { command: 'pipe', description: '🔀 Pipe: live-attach vs resume' },
   { command: 'attach', description: '🔗 Attach to a live session' },
   { command: 'detach', description: '⏹ Detach (back to resume)' }
-]).then(() => {
+];
+
+bot.setMyCommands(BOT_COMMANDS).then(() => {
   console.log('✅ Bot commands menu set');
 }).catch(err => {
   console.log('⚠️ Could not set commands menu:', err.message);
@@ -1318,6 +1320,13 @@ if (GROUP_BOT_TOKEN) {
 
   raw.on('polling_error', (err) => console.log(`[Polling:group] ${err.message || err}`));
 
+  // Without its own registration the new bot has no slash menu at all. The default
+  // scope does not reach group chats, so groups are registered explicitly too.
+  raw.setMyCommands(BOT_COMMANDS)
+    .then(() => raw.setMyCommands(BOT_COMMANDS, { scope: { type: 'all_group_chats' } }))
+    .then(() => console.log('✅ Group bot commands menu set'))
+    .catch(err => console.log('⚠️ Could not set group commands menu:', err.message));
+
   // Every command module registers against the wrapped bot, so their replies land back
   // in the topic they were called from without any of them knowing topics exist.
   navigationCommands.register(groupBot, isAuthorized);
@@ -1340,21 +1349,41 @@ if (GROUP_BOT_TOKEN) {
 
   // First group we see becomes the mirrored one. The General topic there and the direct
   // chat are then the same session, with every reply going to both.
-  const armMirror = (chatId) => {
-    if (mirror || !chatId) return;
+  // Layering matters. The topic wrapper must sit *inside* the mirror: the mirror decides
+  // what to duplicate by looking at the chat key, and the wrapper is what turns a key
+  // back into a chat plus a thread. Wrapping the other way round hands the mirror an
+  // already-flattened group id, so every topic looks like the primary one and the whole
+  // group ends up duplicated into the direct chat.
+  const topicAware = wrapBot(raw);
+
+  const setPrimary = (chatKey) => {
+    if (!chatKey) return;
     const { createMirror } = require('./lib/mirror-bot');
     mirrorDmChat = ALLOWED_USER_IDS[0];
-    const m = createMirror({
-      primary: raw,
+    mirrorPrimaryChat = chatKey;
+    mirror = createMirror({
+      primary: topicAware,
       secondary: bot,
-      primaryChat: chatId,
+      primaryChat: chatKey,
       secondaryChat: mirrorDmChat,
     });
-    mirror = m;
-    mirrorPrimaryChat = chatId;
-    groupBot = wrapBot(m.wrap(raw));
-    console.log(`✅ Mirroring the General topic of ${chatId} with the direct chat`);
+    groupBot = mirror.wrap(topicAware);
+    console.log(`✅ Primary session is ${chatKey}, mirrored with the direct chat`);
   };
+
+  // Until told otherwise the General topic of the first group we see is the primary one.
+  const armMirror = (chatId) => {
+    if (mirror || !chatId) return;
+    setPrimary(chatId);
+  };
+
+  // Point the mirror at whichever topic this was sent from.
+  raw.onText(/^\/primary$/, (msg) => {
+    if (!isAuthorized(msg) || isPrivate(msg.chat)) return;
+    const key = chatKeyOf(msg);
+    setPrimary(key);
+    groupBot.sendMessage(key, '📌 This topic is now the primary session. It is mirrored with the direct chat.');
+  });
 
   raw.on('message', (msg) => {
     if (isPrivate(msg.chat)) return; // direct messages belong to the main bot
