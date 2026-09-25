@@ -46,3 +46,6 @@ data/
 *.pre-*
 *.with-status-*
 __pycache__/
+
+# QA harness scratch state (scripts/qa.js)
+data-qa/

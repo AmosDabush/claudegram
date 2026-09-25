@@ -30,11 +30,16 @@ const askCommands = require('./lib/commands/ask');
 const attachCommands = require('./lib/commands/attach');
 const gaggimateCommands = require('./lib/commands/gaggimate');
 
+// A QA run loads this file to drive the real handlers with synthetic updates. It must not
+// poll Telegram, must not take the running bot's place, and must leave no trace: no
+// killing the live instance, no pid file, no heartbeat, no session scan. See scripts/qa.js.
+const QA_MODE = process.env.CLAUDEGRAM_QA === '1';
+
 // ===== Kill previous instance if exists =====
 // Telegram serves getUpdates to one consumer per token, so a surviving old
 // process does not merely waste memory — the two fight over every update and
 // both get 409s. This has to succeed before polling starts.
-try {
+if (!QA_MODE) try {
   if (fs.existsSync(FILES.pid)) {
     const oldPid = fs.readFileSync(FILES.pid, 'utf-8').trim();
     if (oldPid && oldPid !== process.pid.toString()) {
@@ -48,8 +53,10 @@ try {
 } catch (e) {}
 
 // Write current PID
-fs.writeFileSync(FILES.pid, process.pid.toString());
-console.log(`Bot PID: ${process.pid}`);
+if (!QA_MODE) {
+  fs.writeFileSync(FILES.pid, process.pid.toString());
+  console.log(`Bot PID: ${process.pid}`);
+}
 
 // Cleanup on exit
 process.on('exit', () => {
@@ -92,12 +99,66 @@ if (ALLOWED_USER_IDS.length === 0) {
 }
 
 // ===== Initialize bot =====
-const bot = new TelegramBot(BOT_TOKEN, {
-  polling: {
+const mainBot = new TelegramBot(BOT_TOKEN, {
+  polling: QA_MODE ? false : {
     autoStart: true,
     params: { timeout: 30 }
   }
 });
+
+// Answer through whichever bot can reach the chat being answered.
+//
+// Everything in this file replies to msg.chat.id, and most of it was written before topics
+// existed. Inside a group that id is the synthetic "<chat>:<thread>" key, which only the
+// group bot knows how to turn back into a chat plus a thread — handing it to this bot
+// produces an invalid chat id, which is how even "⛔ Unauthorized" failed to arrive.
+// Deciding from the id itself means no handler has to know: the same code answers in a
+// direct chat, in General, and inside a topic.
+const CHAT_FIRST = new Set(['sendMessage', 'sendPhoto', 'sendDocument', 'sendVoice', 'sendAudio', 'sendChatAction', 'sendSticker', 'deleteMessage']);
+const CHAT_IN_OPTIONS = new Set(['editMessageText', 'editMessageCaption', 'editMessageReplyMarkup']);
+
+// groupBot is built much further down; resolved per call, never captured.
+function routeFor(chatId) {
+  return groupBot && String(chatId).startsWith('-') ? groupBot : null;
+}
+
+const bot = new Proxy(mainBot, {
+  get(target, prop, receiver) {
+    const value = Reflect.get(target, prop, receiver);
+    if (typeof value !== 'function') return value;
+    const name = String(prop);
+
+    if (CHAT_FIRST.has(name)) {
+      return (...args) => {
+        const via = routeFor(args[0]);
+        return via ? via[name](...args) : value.apply(target, args);
+      };
+    }
+    if (CHAT_IN_OPTIONS.has(name)) {
+      return (...args) => {
+        const via = routeFor(args[1] && args[1].chat_id);
+        return via ? via[name](...args) : value.apply(target, args);
+      };
+    }
+    return value.bind(target);
+  }
+});
+
+// Slash handlers live in this file as well as in the command modules, and the group bot is
+// created long after they are registered. Collecting them is what lets a topic offer the
+// same menu and the same commands as the direct chat instead of staying silent.
+const localHandlers = [];
+const localEvents = [];
+
+function onCommand(regexp, handler) {
+  localHandlers.push([regexp, handler]);
+  bot.onText(regexp, handler);
+}
+
+function onEvent(event, handler) {
+  localEvents.push([event, handler]);
+  bot.on(event, handler);
+}
 
 // ===== Polling error recovery =====
 bot.on('polling_error', (err) => {
@@ -177,13 +238,13 @@ console.log(`📁 Data directory: ${path.dirname(FILES.sessions)}`);
 const HEARTBEAT_FILE = path.join(path.dirname(FILES.sessions), 'heartbeat');
 const writeHeartbeat = () => { try { fs.writeFileSync(HEARTBEAT_FILE, Date.now().toString()); } catch (e) {} };
 writeHeartbeat();
-setInterval(writeHeartbeat, 30000);
+if (!QA_MODE) setInterval(writeHeartbeat, 30000);
 
 // Cleanup old temp files on startup
 cleanupTempFiles();
 
 // Sync CLI sessions to unified registry on startup
-try { require('./scripts/watch-cli-sessions'); } catch (e) { console.log('⚠️ CLI session sync skipped:', e.message); }
+if (!QA_MODE) try { require('./scripts/watch-cli-sessions'); } catch (e) { console.log('⚠️ CLI session sync skipped:', e.message); }
 
 // Restore active sessions for users with persistSession enabled
 restoreActiveSessions();
@@ -229,7 +290,7 @@ attachCommands.setRenderers({
 });
 
 // ===== Help commands =====
-bot.onText(/\/start$/, (msg) => {  // Only match /start without parameters
+onCommand(/\/start$/, (msg) => {  // Only match /start without parameters
   if (!isAuthorized(msg)) return;
 
   const userState = getUserState(msg.chat.id);
@@ -261,7 +322,7 @@ Current: *${userState.currentProject}*
 });
 
 // ===== /all - List all commands =====
-bot.onText(/\/all/, (msg) => {
+onCommand(/\/all/, (msg) => {
   if (!isAuthorized(msg)) return;
 
   const userState = getUserState(msg.chat.id);
@@ -337,19 +398,19 @@ _From the terminal:_ /remote-telegram-current-session · /remote-telegram-all
 });
 
 // ===== /menu - Interactive menu =====
-bot.onText(/\/menu/, (msg) => {
+onCommand(/\/menu/, (msg) => {
   if (!isAuthorized(msg)) return;
   sendAllMenu(bot, msg.chat.id);
 });
 
 // ===== /settings - Quick settings menu =====
-bot.onText(/\/settings/, (msg) => {
+onCommand(/\/settings/, (msg) => {
   if (!isAuthorized(msg)) return;
   sendQuickSettings(bot, msg.chat.id);
 });
 
 // /stream [off|on|live] - how much of the answer you watch being written
-bot.onText(/^\/stream(?:\s+(off|on|live))?$/, (msg, match) => {
+onCommand(/^\/stream(?:\s+(off|on|live))?$/, (msg, match) => {
   if (!isAuthorized(msg)) return;
   const chatId = msg.chat.id;
   const userState = getUserState(chatId);
@@ -555,13 +616,13 @@ function sendClaudeSessionPanel(bot, chatId, messageId = null) {
     : bot.sendMessage(chatId, text, opts);
 }
 
-bot.onText(/\/claude/, async (msg) => {
+onCommand(/\/claude/, async (msg) => {
   if (!isAuthorized(msg)) return;
   sendClaudeSessionPanel(bot, msg.chat.id);
 });
 
 // ===== Close command - kill all bot instances =====
-bot.onText(/\/close/, async (msg) => {
+onCommand(/\/close/, async (msg) => {
   if (!isAuthorized(msg)) return;
 
   await bot.sendMessage(msg.chat.id, '👋 Closing all bot instances...');
@@ -573,7 +634,7 @@ bot.onText(/\/close/, async (msg) => {
 });
 
 // ===== Reset command - clear stuck state without restart =====
-bot.onText(/\/reset/, async (msg) => {
+onCommand(/\/reset/, async (msg) => {
   if (!isAuthorized(msg)) return;
 
   const chatId = msg.chat.id;
@@ -587,7 +648,7 @@ bot.onText(/\/reset/, async (msg) => {
 // ===== Restart command =====
 // /restart - keeps session for auto-resume
 // /restart clean - clears everything including sessions
-bot.onText(/\/restart(?:\s+(clean))?/, async (msg, match) => {
+onCommand(/\/restart(?:\s+(clean))?/, async (msg, match) => {
   if (!isAuthorized(msg)) return;
 
   const chatId = msg.chat.id;
@@ -644,7 +705,7 @@ bot.onText(/\/restart(?:\s+(clean))?/, async (msg, match) => {
 });
 
 // ===== Photo handler - download and send to Claude =====
-bot.on('photo', async (msg) => {
+onEvent("photo", async (msg) => {
   if (!isAuthorized(msg)) return;
 
   const chatId = msg.chat.id;
@@ -778,7 +839,7 @@ bot.on('photo', async (msg) => {
 });
 
 // ===== Log commands =====
-bot.onText(/\/logs(?:\s+(\d+))?/, async (msg, match) => {
+onCommand(/\/logs(?:\s+(\d+))?/, async (msg, match) => {
   if (!isAuthorized(msg)) return;
 
   const lines = parseInt(match[1]) || 50;
@@ -802,7 +863,7 @@ bot.onText(/\/logs(?:\s+(\d+))?/, async (msg, match) => {
   }
 });
 
-bot.onText(/\/logfile/, async (msg) => {
+onCommand(/\/logfile/, async (msg) => {
   if (!isAuthorized(msg)) return;
 
   try {
@@ -820,7 +881,7 @@ bot.onText(/\/logfile/, async (msg) => {
   }
 });
 
-bot.onText(/\/clearlogs/, async (msg) => {
+onCommand(/\/clearlogs/, async (msg) => {
   if (!isAuthorized(msg)) return;
 
   try {
@@ -859,13 +920,13 @@ async function handleAnydesk(chatId) {
   }
 }
 
-bot.onText(/\/anydesk/, async (msg) => {
+onCommand(/\/anydesk/, async (msg) => {
   if (!isAuthorized(msg)) return;
   handleAnydesk(msg.chat.id);
 });
 
 // /waker - status of the independent bot-waker, or /waker <minutes> to set interval
-bot.onText(/\/waker(?:\s+(\d+))?$/, async (msg, match) => {
+onCommand(/\/waker(?:\s+(\d+))?$/, async (msg, match) => {
   if (!isAuthorized(msg)) return;
   // The waker is a LaunchAgent plus `pmset schedule wake`. On Windows the PC
   // does not sleep and a Scheduled Task covers startup, so there is nothing
@@ -1323,7 +1384,7 @@ if (GROUP_BOT_TOKEN) {
   const { wrapBot, chatKeyOf } = require('./lib/topic-bot');
 
   const raw = new TelegramBot(GROUP_BOT_TOKEN, {
-    polling: { autoStart: true, params: { timeout: 30 } }
+    polling: QA_MODE ? false : { autoStart: true, params: { timeout: 30 } }
   });
   groupBot = wrapBot(raw);
 
@@ -1369,13 +1430,12 @@ if (GROUP_BOT_TOKEN) {
     return passUpdate(update);
   };
 
-  // The menus live in this file rather than in a command module, so the registration loop
-  // above never handed them to the group bot: /menu, /settings and /claude were silent in
-  // a topic while plain conversation worked. They take the bot to answer through, so the
-  // group's copy routes back into the topic it was called from.
-  groupBot.onText(/\/menu/, (msg) => { if (isAuthorized(msg)) sendAllMenu(groupBot, msg.chat.id); });
-  groupBot.onText(/\/settings/, (msg) => { if (isAuthorized(msg)) sendQuickSettings(groupBot, msg.chat.id); });
-  groupBot.onText(/\/claude/, (msg) => { if (isAuthorized(msg)) sendClaudeSessionPanel(groupBot, msg.chat.id); });
+  // The rest of this file's commands — the menus, /stream, /logs, /waker and the others —
+  // are not in a command module, so the loop above never reached them and a topic had no
+  // menu at all. They answer through the routing proxy, so the same handler replies into
+  // whichever topic it was called from.
+  localHandlers.forEach(([regexp, handler]) => groupBot.onText(regexp, handler));
+  localEvents.forEach(([event, handler]) => groupBot.on(event, handler));
 
   // Downstream code reads the chat id off the message to key state and to reply.
   // Swapping in the synthetic key here is what makes each topic its own session —
@@ -1404,3 +1464,7 @@ process.on('uncaughtException', (error) => {
 });
 
 console.log('✅ Bot is ready!');
+
+// Handed to scripts/qa.js so a test run can push updates through the same handlers
+// Telegram would. Exporting costs nothing when the bot runs for real.
+module.exports = { bot, groupBot, isAuthorized };
