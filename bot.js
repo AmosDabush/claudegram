@@ -10,7 +10,7 @@ const path = require('path');
 
 // Load modules
 const platform = require('./lib/platform');
-const { FILES, TTS_ENGINES, VOICE_CHUNK_PRESETS } = require('./lib/config');
+const { FILES, TTS_ENGINES, VOICE_CHUNK_PRESETS, RESTART_EXIT_CODE } = require('./lib/config');
 const { getUserState, getAllUserStates, saveNow, getProjects, setSessionsModule, restoreActiveSessions, resetUserRuntime, resetAllUsersRuntime } = require('./lib/state');
 const { cleanupTempFiles, runQuickCommand, isGitRepo, tailFile } = require('./lib/utils');
 const sessions = require('./lib/sessions');
@@ -609,10 +609,27 @@ bot.onText(/\/restart(?:\s+(clean))?/, async (msg, match) => {
   // Save chat ID for restart notification
   fs.writeFileSync(FILES.restartNotify, chatId.toString());
 
-  // Restart through the launcher, which brings the wrapper back with us
-  // (and caffeinate on the Mac).
+  // Ask the wrapper to bring us back, rather than launching our own replacement.
+  //
+  // The old path spawned the launcher detached and then exited, which left the restart
+  // riding on a child outliving the parent that made it. On Windows that is not a promise
+  // the OS keeps: a detached child still inherits its parent's job object, so whatever
+  // tears the tree down takes the launcher with it. The launcher then had to kill an
+  // instance that was already leaving and re-open log files the dying wrapper might still
+  // hold — Start-Process fails outright if they are locked. Any of those landed the same
+  // way, cleanly and silently: bot gone, nothing to bring it back.
+  //
+  // The wrapper is already the thing that outlives bot.js, so let it do the job. A
+  // dedicated exit code separates "restart me" from a crash (retried, budget spent) and
+  // from a clean exit (/close, which must stay down).
   const { spawn } = require('child_process');
   setTimeout(() => {
+    if (process.env.CLAUDEGRAM_WRAPPED) {
+      process.exit(RESTART_EXIT_CODE);
+      return;
+    }
+
+    // Started without the wrapper, so there is nobody to come back for us.
     const launcher = platform.IS_WIN
       ? { file: 'powershell.exe', args: ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', 'start.ps1'] }
       : { file: 'bash', args: ['start.sh'] };
@@ -622,7 +639,6 @@ bot.onText(/\/restart(?:\s+(clean))?/, async (msg, match) => {
       stdio: 'ignore'
     }).unref();
 
-    // Exit current process (the launcher will kill us anyway, but be clean)
     setTimeout(() => process.exit(0), 500);
   }, 500);
 });

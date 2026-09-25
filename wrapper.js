@@ -7,6 +7,11 @@ const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 
+// Read from config so bot.js and this file cannot drift, but never let the supervisor die
+// because an app module failed to load — that is the one process that has to come up.
+let RESTART_EXIT_CODE = 42;
+try { RESTART_EXIT_CODE = require('./lib/config').RESTART_EXIT_CODE; } catch (e) {}
+
 const BOT_DIR = __dirname;
 const LOG_FILE = path.join(BOT_DIR, 'bot.log');
 const MAX_RETRIES = 5;
@@ -29,7 +34,9 @@ function startBot() {
   botProcess = spawn('node', ['bot.js'], {
     cwd: BOT_DIR,
     stdio: ['inherit', 'pipe', 'pipe'],
-    env: process.env
+    // Tells bot.js a supervisor is watching, so /restart can hand the job over instead of
+    // trying to launch its own replacement.
+    env: { ...process.env, CLAUDEGRAM_WRAPPED: '1' }
   });
 
   // Pipe stdout/stderr to log file
@@ -47,7 +54,12 @@ function startBot() {
   });
 
   botProcess.on('exit', (code, signal) => {
-    if (code === 0) {
+    if (code === RESTART_EXIT_CODE) {
+      // Asked for, not a failure: bring it straight back and leave the retry budget alone,
+      // so a run of deliberate restarts can never exhaust it.
+      log('Bot asked to be restarted');
+      setTimeout(startBot, 500);
+    } else if (code === 0) {
       log('Bot exited cleanly (code 0)');
       process.exit(0);
     } else {
