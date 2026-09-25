@@ -1274,8 +1274,33 @@ async function handleIncomingMessage(bot, msg) {
 }
 
 // ===== Wire the handlers to the main bot =====
-bot.on('message', (msg) => handleIncomingMessage(bot, msg));
-bot.on('callback_query', (query) => handleCallbackQuery(bot, query));
+// Both bots can sit in the same group, so they need a rule for who owns what or they
+// each answer every message. The main bot owns direct messages; the group bot owns
+// groups. Without the split you get two of everything.
+const isPrivate = (chat) => !chat || chat.type === 'private';
+
+// The primary session is reachable from two places: the group's General topic and the
+// old direct chat. Both are the same conversation, so both are keyed to the group and
+// every reply is sent to both. Set once the group bot knows which group it is in.
+let mirror = null;
+let mirrorDmChat = null;
+let mirrorPrimaryChat = null;
+
+const isPrimaryDm = (chat) => mirror && isPrivate(chat) && String(chat.id) === String(mirrorDmChat);
+
+bot.on('message', (msg) => {
+  // A direct message to the primary session is routed through the group bot so both
+  // windows stay identical; the mirror sends the reply back here as well.
+  if (isPrimaryDm(msg.chat)) return;
+  if (GROUP_BOT_TOKEN && !isPrivate(msg.chat)) return;
+  handleIncomingMessage(bot, msg);
+});
+bot.on('callback_query', (query) => {
+  const chat = query.message && query.message.chat;
+  if (isPrimaryDm(chat)) return;
+  if (GROUP_BOT_TOKEN && !isPrivate(chat)) return;
+  handleCallbackQuery(bot, query);
+});
 
 // ===== Optional second bot: one supergroup, one topic per session =====
 // Same process, same session machinery, second door. Without the token nothing below
@@ -1313,12 +1338,41 @@ if (GROUP_BOT_TOKEN) {
     chatHolder.chat.id = chatKeyOf(chatHolder);
   };
 
+  // First group we see becomes the mirrored one. The General topic there and the direct
+  // chat are then the same session, with every reply going to both.
+  const armMirror = (chatId) => {
+    if (mirror || !chatId) return;
+    const { createMirror } = require('./lib/mirror-bot');
+    mirrorDmChat = ALLOWED_USER_IDS[0];
+    const m = createMirror({
+      primary: raw,
+      secondary: bot,
+      primaryChat: chatId,
+      secondaryChat: mirrorDmChat,
+    });
+    mirror = m;
+    mirrorPrimaryChat = chatId;
+    groupBot = wrapBot(m.wrap(raw));
+    console.log(`✅ Mirroring the General topic of ${chatId} with the direct chat`);
+  };
+
   raw.on('message', (msg) => {
+    if (isPrivate(msg.chat)) return; // direct messages belong to the main bot
+    armMirror(msg.chat.id);
     retarget(msg);
     handleIncomingMessage(groupBot, msg);
   });
 
+  // A direct message to the primary session is handled here so it shares the General
+  // topic's state and its reply reaches both windows.
+  bot.on('message', (msg) => {
+    if (!isPrimaryDm(msg.chat)) return;
+    msg.chat.id = mirror ? mirrorPrimaryChat : msg.chat.id;
+    handleIncomingMessage(groupBot, msg);
+  });
+
   raw.on('callback_query', (query) => {
+    if (isPrivate(query.message && query.message.chat)) return;
     retarget(query.message);
     handleCallbackQuery(groupBot, query);
   });
