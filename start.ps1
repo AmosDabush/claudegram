@@ -34,22 +34,47 @@ New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
 # old process has to be gone before the new one starts or both get 409s.
 function Stop-Bot {
   $killed = @()
-  Get-CimInstance Win32_Process -Filter "Name='node.exe'" -ErrorAction SilentlyContinue |
-    Where-Object {
-      $_.CommandLine -and
-      ($_.CommandLine -match 'bot\.js|wrapper\.js') -and
-      ($_.CommandLine -like "*$BotDir*" -or (Get-Process -Id $_.ProcessId -ErrorAction SilentlyContinue).Path)
-    } |
-    ForEach-Object {
-      # Confirm by working directory where we can, so a same-named process from
-      # another checkout survives.
-      try { Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop; $killed += $_.ProcessId } catch {}
-    }
+
+  # The pid file is the reliable target: bot.js writes it on startup.
   if (Test-Path $PidFile) {
     $old = (Get-Content $PidFile -ErrorAction SilentlyContinue).Trim()
     if ($old) { try { Stop-Process -Id ([int]$old) -Force -ErrorAction Stop; $killed += $old } catch {} }
     Remove-Item $PidFile -Force -ErrorAction SilentlyContinue
   }
+
+  # Then the wrapper, and any bot the pid file missed (crash before it was
+  # written, or a stale file).
+  #
+  # Kill the WRAPPER FIRST and let it go before touching bot.js: the wrapper
+  # restarts its child on a non-zero exit, so killing the bot while its wrapper
+  # lives just spawns a replacement. Two surviving wrappers is worse still —
+  # each new bot.js kills the other's on startup, and they trade places every
+  # three seconds forever.
+  #
+  # Match on the ARGUMENTS only. An earlier version tested the whole command
+  # line for a path separator to avoid killing another checkout, but the node
+  # executable is itself a backslashed path ("C:\Program Files\nodejs\node.exe"
+  # wrapper.js), so that test excluded every wrapper and caused exactly the
+  # restart loop described above.
+  $argsOf = {
+    param($cl)
+    if ($cl -match '^\s*"[^"]+"\s*(.*)$') { $Matches[1] }
+    elseif ($cl -match '^\s*\S+\s+(.*)$') { $Matches[1] }
+    else { '' }
+  }
+
+  foreach ($script in @('wrapper\.js', 'bot\.js')) {
+    Get-CimInstance Win32_Process -Filter "Name='node.exe'" -ErrorAction SilentlyContinue |
+      Where-Object {
+        $a = & $argsOf $_.CommandLine
+        $a -match "\b$script\b" -and ($a -notmatch '[\\/]' -or $a -like "*$BotDir*")
+      } |
+      ForEach-Object {
+        try { Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop; $killed += $_.ProcessId } catch {}
+      }
+    Start-Sleep -Milliseconds 600   # let the wrapper die before its child
+  }
+
   if ($killed.Count) { Write-Host "Stopped: $($killed -join ', ')" }
 }
 
