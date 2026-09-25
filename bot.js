@@ -1332,6 +1332,35 @@ if (GROUP_BOT_TOKEN) {
   helpCommands.register(groupBot, isAuthorized);
   gaggimateCommands.register(groupBot, isAuthorized);
 
+  // With more than one bot in a group, Telegram appends @botname to every command the
+  // menu inserts, so the text arrives as "/settings@some_bot". Handlers that anchor their
+  // regex with $ — /stream, /waker, /resume, /pin — simply stop matching, and the ones
+  // addressed to the other bot would be answered twice. Strip the suffix when we are the
+  // one being addressed, and stay out of it when we are not.
+  let selfName = null;
+  raw.getMe()
+    .then(me => { selfName = (me.username || '').toLowerCase(); })
+    .catch(err => console.log('⚠️ Could not read group bot username:', err.message));
+
+  const passUpdate = raw.processUpdate.bind(raw);
+  raw.processUpdate = (update) => {
+    const m = update.message || update.edited_message;
+    const addressed = m && typeof m.text === 'string' && /^\/[A-Za-z0-9_]+@([A-Za-z0-9_]+)/.exec(m.text);
+    if (addressed) {
+      if (selfName && addressed[1].toLowerCase() !== selfName) return;
+      m.text = m.text.replace(/^(\/[A-Za-z0-9_]+)@[A-Za-z0-9_]+/, '$1');
+    }
+    return passUpdate(update);
+  };
+
+  // The menus live in this file rather than in a command module, so the registration loop
+  // above never handed them to the group bot: /menu, /settings and /claude were silent in
+  // a topic while plain conversation worked. They take the bot to answer through, so the
+  // group's copy routes back into the topic it was called from.
+  groupBot.onText(/\/menu/, (msg) => { if (isAuthorized(msg)) sendAllMenu(groupBot, msg.chat.id); });
+  groupBot.onText(/\/settings/, (msg) => { if (isAuthorized(msg)) sendQuickSettings(groupBot, msg.chat.id); });
+  groupBot.onText(/\/claude/, (msg) => { if (isAuthorized(msg)) sendClaudeSessionPanel(groupBot, msg.chat.id); });
+
   // Downstream code reads the chat id off the message to key state and to reply.
   // Swapping in the synthetic key here is what makes each topic its own session —
   // nothing further down has to change.
