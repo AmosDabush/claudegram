@@ -541,7 +541,11 @@ function sendAllMenu(bot, chatId, messageId = null) {
   const keyboard = [
     attachCommands.toggleRow('menu'),
     [{ text: '✦ Ask History', callback_data: 'askhist:ask' }],
-    [{ text: '🔗 Remote Ses', callback_data: 'all:remote' }, { text: '⚙️ Quick Settings', callback_data: 'all:settings' }],
+    // Remote Ses is the attach pipe, which exists only on macOS. Off it the callback
+    // returns without answering, so the button looked broken rather than unavailable.
+    attachCommands.SUPPORTED
+      ? [{ text: '🔗 Remote Ses', callback_data: 'all:remote' }, { text: '⚙️ Quick Settings', callback_data: 'all:settings' }]
+      : [{ text: '⚙️ Quick Settings', callback_data: 'all:settings' }],
     [{ text: '🤖 Claude AI', callback_data: 'all:claude' }, { text: '🔄 Interactive', callback_data: 'all:interactive' }],
     [{ text: '📂 Navigation', callback_data: 'all:nav' }, { text: '📋 Quick Commands', callback_data: 'all:files' }],
     [{ text: '🌿 Git', callback_data: 'all:git' }, { text: '🔀 Parallel', callback_data: 'all:parallel' }],
@@ -588,7 +592,7 @@ function sendClaudeSessionPanel(bot, chatId, messageId = null) {
       { text: `🔄 Interactive: ${interactiveStatus}`, callback_data: 'cmd:interactive' },
       { text: `🖥 ${userState.showTerminal ? 'iTerm' : 'BG'}`, callback_data: 'cmd:terminal' }
     ],
-    [{ text: '🔗 Remote Ses', callback_data: 'all:remote' }],
+    ...(attachCommands.SUPPORTED ? [[{ text: '🔗 Remote Ses', callback_data: 'all:remote' }]] : []),
     [{ text: '▶️ Resume Last Session', callback_data: 'cmd:resume' }],
     [{ text: '📚 Past Sessions', callback_data: 'cmd:sessions' }],
     [{ text: '✦ Ask History', callback_data: 'askhist:ask' }],

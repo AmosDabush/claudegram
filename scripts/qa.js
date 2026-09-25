@@ -49,12 +49,36 @@ childProcess.spawn = function (file, args, options) {
   const sessionId = `qa-session-${proc.pid}`;
   spawns.push({ pid: proc.pid, sessionId, cwd: (options && options.cwd) || null, args: args || [] });
 
-  const emit = (obj, delay) => setTimeout(() => {
-    if (!proc.killed) proc.stdout.write(JSON.stringify(obj) + '\n');
-  }, delay);
+  const write = (obj) => { if (!proc.killed) proc.stdout.write(JSON.stringify(obj) + '\n'); };
+  setTimeout(() => write({ type: 'system', subtype: 'init', session_id: sessionId, cwd: options && options.cwd }), 10);
 
-  emit({ type: 'system', subtype: 'init', session_id: sessionId, cwd: options && options.cwd }, 10);
-  emit({ type: 'result', subtype: 'success', session_id: sessionId, result: 'QA answer' }, 60);
+  // The answer quotes the prompt back. Two chats talking at once produce two identical
+  // replies otherwise, and identical replies cannot show whether one landed in the other's
+  // thread — which is the whole question being asked.
+  // The prompt arrives as stream-json, one message per line, and content is a plain string
+  // in some turns and a list of parts in others. Parse rather than pattern-match, and take
+  // the tail: the bot prepends a style block, so what was actually typed is at the end.
+  const promptOf = (line) => {
+    try {
+      const parsed = JSON.parse(line);
+      const content = parsed && parsed.message && parsed.message.content;
+      if (typeof content === 'string') return content;
+      if (Array.isArray(content)) return content.map(part => (part && part.text) || '').join(' ');
+    } catch (e) {}
+    return '';
+  };
+
+  let stdinBuf = '';
+  let answered = false;
+  const answer = () => {
+    if (answered || proc.killed) return;
+    answered = true;
+    const prompts = stdinBuf.split('\n').map(promptOf).filter(Boolean);
+    const echo = prompts.length ? prompts[prompts.length - 1].slice(-80) : '(no prompt seen)';
+    write({ type: 'result', subtype: 'success', session_id: sessionId, result: `QA answer to: ${echo}` });
+  };
+  proc.stdin.on('data', (chunk) => { stdinBuf += chunk.toString(); setTimeout(answer, 40); });
+  setTimeout(answer, 800);   // a turn must never be able to hang the run
 
   return proc;
 };
@@ -64,11 +88,15 @@ const sent = [];
 let nextMessageId = 1000;
 
 const record = (method, chatId, options, text) => {
+  const rows = (options && options.reply_markup && options.reply_markup.inline_keyboard) || [];
   sent.push({
     method,
     chat: String(chatId),
     thread: (options && options.message_thread_id) != null ? options.message_thread_id : null,
     text: typeof text === 'string' ? text : '',
+    // Captured so a test can press what a menu actually offers, rather than a hand-kept
+    // list that drifts the moment a button is added.
+    buttons: rows.flat().map(b => b && b.callback_data).filter(Boolean),
   });
 };
 
@@ -157,6 +185,15 @@ const callback = (chat, data, { thread = null, from = USER_ID } = {}) => ({
   },
 });
 
+// Let whatever the last case set in motion finish and be discarded. A GaggiMate panel or a
+// finished turn arriving a second late would otherwise be counted against the next case,
+// and read exactly like a reply that escaped into the wrong chat.
+const settle = async (ms = 900) => {
+  await new Promise(resolve => setTimeout(resolve, ms));
+  sent.length = 0;
+  spawns.length = 0;
+};
+
 // Which bot Telegram would hand this update to: the group bot owns groups.
 const deliver = async (update, { wait = 250, keep = false } = {}) => {
   if (!keep) { sent.length = 0; spawns.length = 0; }
@@ -172,6 +209,41 @@ const deliver = async (update, { wait = 250, keep = false } = {}) => {
 // the destination is the thing that keeps breaking.
 const repliedTo = (calls, chat, thread) =>
   calls.some(c => c.chat === String(chat) && c.thread === thread && c.method !== 'sendChatAction');
+
+// Buttons that would end the run rather than test it: a restart or a close takes the
+// process down, and a reset throws away the state the later cases rely on.
+const DESTRUCTIVE = /restart|close|reset|clean|delete|remove|kill|shutdown|clearlog|forceresume|move_to_mac/i;
+
+// Open a menu, then press everything it offers and check each answer comes back to the
+// same chat. Reading the buttons off the menu itself means a button added later is tested
+// without anyone remembering to add it here.
+async function pressEveryButton(chat, thread) {
+  const opened = await deliver(message(chat, '/menu', { thread }), { wait: 300 });
+  const offered = [...new Set(opened.flatMap(c => c.buttons))];
+  const pressable = offered.filter(data => !DESTRUCTIVE.test(data));
+
+  if (!offered.length) return '/menu offered no buttons at all';
+  if (!pressable.length) return `every button looked destructive: ${offered.join(', ')}`;
+
+  const broken = [];
+  for (const data of pressable) {
+    await settle();
+    let calls = await deliver(callback(chat, data, { thread }), { wait: 400 });
+    if (!calls.length) {
+      // A button that reaches something outside this process — the espresso machine, a
+      // local HTTP service — answers later than one that only redraws a menu. Give it a
+      // second window before calling it dead, or the suite fails on a slow network.
+      await new Promise(resolve => setTimeout(resolve, 1200));
+      calls = sent.slice();
+    }
+    if (!calls.length) { broken.push(`${data} → nothing happened`); continue; }
+    const stray = calls.find(c => c.chat !== String(chat));
+    if (stray) broken.push(`${data} → ${stray.method} to ${stray.chat}: ${JSON.stringify(stray.text.slice(0, 50))}`);
+  }
+
+  return broken.length === 0 ||
+    `${broken.length} of ${pressable.length} buttons misbehaved: ${broken.slice(0, 6).join(' | ')}`;
+}
 
 const CASES = [
   {
@@ -286,6 +358,102 @@ const CASES = [
       return true;
     },
   },
+  // ── Every button the menus actually offer ──────────────────────────────────
+  {
+    name: 'menu: every button pressed in a topic answers in that topic',
+    run: () => pressEveryButton(GROUP_CHAT, 41),
+  },
+  {
+    name: 'menu: every button pressed in a second topic stays there',
+    run: () => pressEveryButton(GROUP_CHAT, 86),
+  },
+  {
+    name: 'menu: every button pressed in the direct chat answers there',
+    run: () => pressEveryButton(DM_CHAT, null),
+  },
+
+  // ── Session commands inside a topic ────────────────────────────────────────
+  {
+    name: 'topic: /new starts a fresh session for that topic alone',
+    run: async () => {
+      await deliver(message(GROUP_CHAT, 'first turn', { thread: 41 }), { wait: 500 });
+      const before = spawns.slice();
+      await deliver(message(GROUP_CHAT, '/new', { thread: 41 }), { wait: 300 });
+      const after = await deliver(message(GROUP_CHAT, 'turn after new', { thread: 41 }), { wait: 500 });
+
+      if (!before.length || !spawns.length) return '/new left the topic without a session';
+      if (spawns[0].sessionId === before[0].sessionId) return '/new reused the old session';
+      if (spawns[0].args.includes('--resume')) return '/new resumed instead of starting fresh';
+      return after.some(c => c.thread === 41) || 'the new session did not answer in topic 41';
+    },
+  },
+  {
+    name: 'topic: /resume answers in the topic it was asked from',
+    update: () => message(GROUP_CHAT, '/resume', { thread: 41 }),
+    check: (calls) =>
+      calls.length === 0 ? '/resume said nothing at all' :
+      calls.every(c => c.chat === String(GROUP_CHAT)) ||
+      `/resume answered elsewhere: ${JSON.stringify(calls.map(c => [c.method, c.chat, c.thread]))}`,
+  },
+  {
+    name: 'topic: /sessions answers in the topic it was asked from',
+    update: () => message(GROUP_CHAT, '/sessions', { thread: 86 }),
+    check: (calls) =>
+      calls.length === 0 ? '/sessions said nothing at all' :
+      calls.every(c => c.chat === String(GROUP_CHAT)) ||
+      `/sessions answered elsewhere: ${JSON.stringify(calls.map(c => [c.method, c.chat, c.thread]))}`,
+  },
+
+  // ── Two topics talking at the same time ────────────────────────────────────
+  {
+    // Delivered without waiting in between, so both turns are genuinely in flight. The
+    // stub quotes each prompt back, which is what makes a crossed reply visible.
+    name: 'concurrent: two topics at once never answer into each other',
+    run: async () => {
+      sent.length = 0;
+      spawns.length = 0;
+      groupBot.processUpdate(message(GROUP_CHAT, 'marker-alpha', { thread: 41 }));
+      groupBot.processUpdate(message(GROUP_CHAT, 'marker-beta', { thread: 86 }));
+      await new Promise(resolve => setTimeout(resolve, 1200));
+
+      const calls = sent.slice();
+      const answers = calls.filter(c => /marker-/.test(c.text));
+      if (!answers.length) {
+        return `neither turn produced an answer; saw ${JSON.stringify(calls.map(c => [c.method, c.thread, c.text.slice(0, 45)]))}`;
+      }
+
+      const crossed = answers.filter(c =>
+        (c.thread === 41 && /marker-beta/.test(c.text)) ||
+        (c.thread === 86 && /marker-alpha/.test(c.text)));
+      if (crossed.length) {
+        return `a reply landed in the wrong topic: ${JSON.stringify(crossed.map(c => [c.thread, c.text.slice(0, 40)]))}`;
+      }
+
+      const sessions = new Set(spawns.map(s => s.sessionId));
+      if (spawns.length >= 2 && sessions.size < 2) return 'both turns ran in one session';
+      const strays = calls.filter(c => c.chat !== String(GROUP_CHAT));
+      return strays.length === 0 || `traffic escaped the group: ${JSON.stringify(strays.map(c => c.chat))}`;
+    },
+  },
+  {
+    name: 'concurrent: a topic and the direct chat at once stay apart',
+    run: async () => {
+      sent.length = 0;
+      spawns.length = 0;
+      groupBot.processUpdate(message(GROUP_CHAT, 'marker-group', { thread: 41 }));
+      bot.processUpdate(message(DM_CHAT, 'marker-direct'));
+      await new Promise(resolve => setTimeout(resolve, 1200));
+
+      const answers = sent.filter(c => /marker-/.test(c.text));
+      if (!answers.length) return 'neither turn produced an answer';
+      const crossed = answers.filter(c =>
+        (c.chat === String(DM_CHAT) && /marker-group/.test(c.text)) ||
+        (c.chat === String(GROUP_CHAT) && /marker-direct/.test(c.text)));
+      return crossed.length === 0 ||
+        `a reply crossed between the group and the direct chat: ${JSON.stringify(crossed.map(c => [c.chat, c.text.slice(0, 40)]))}`;
+    },
+  },
+
   {
     name: 'sessions: a topic answers only its own chat',
     run: async () => {
@@ -305,6 +473,7 @@ const CASES = [
   console.log(`\nQA: ${cases.length} case(s)\n`);
 
   for (const testCase of cases) {
+    await settle();
     let calls = [];
     let verdict;
     if (testCase.run) {
