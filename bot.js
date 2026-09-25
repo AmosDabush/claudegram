@@ -28,6 +28,7 @@ const bookmarkCommands = require('./lib/commands/bookmark');
 const helpCommands = require('./lib/commands/help');
 const askCommands = require('./lib/commands/ask');
 const attachCommands = require('./lib/commands/attach');
+const gaggimateCommands = require('./lib/commands/gaggimate');
 
 // ===== Kill previous instance if exists =====
 // Telegram serves getUpdates to one consumer per token, so a surviving old
@@ -218,6 +219,7 @@ parallelCommands.register(bot, isAuthorized);
 bookmarkCommands.register(bot, isAuthorized);
 askCommands.register(bot, isAuthorized);
 helpCommands.register(bot, isAuthorized);
+gaggimateCommands.register(bot, isAuthorized);
 attachCommands.register(bot, isAuthorized);
 attachCommands.setRenderers({
   menu:   (b, c, m) => sendAllMenu(b, c, m),
@@ -481,6 +483,7 @@ function sendAllMenu(bot, chatId, messageId = null) {
     [{ text: '📂 Navigation', callback_data: 'all:nav' }, { text: '📋 Quick Commands', callback_data: 'all:files' }],
     [{ text: '🌿 Git', callback_data: 'all:git' }, { text: '🔀 Parallel', callback_data: 'all:parallel' }],
     [{ text: '🎙 Voice', callback_data: 'all:voice' }, { text: '📜 Logs', callback_data: 'all:logs' }],
+    [{ text: '☕ GaggiMate', callback_data: 'gag:home' }],
     [{ text: '🛑 Cancel Request', callback_data: 'cmd:cancel' }]
   ];
 
@@ -883,6 +886,7 @@ bot.on('callback_query', async (query) => {
   if (parallelCommands.handleCallback(bot, query, userState)) return;
   if (helpCommands.handleCallback(bot, query, userState)) return;
   if (bookmarkCommands.handleCallback(bot, query, userState)) return;
+  if (gaggimateCommands.handleCallback(bot, query)) return;   // own gag: namespace
 
   // Handle quick settings callbacks
   if (data.startsWith('qset:')) {
