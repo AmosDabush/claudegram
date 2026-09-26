@@ -129,7 +129,16 @@ stub('deleteMessage', function (chatId, messageId) {
 });
 
 stub('answerCallbackQuery', function () { return Promise.resolve(true); });
-stub('setMyCommands', function () { return Promise.resolve(true); });
+
+// The bot publishes its own command list at startup. Capturing it here is what lets the
+// suite run every command the menu advertises, instead of a copy kept in step by hand.
+let registeredCommands = [];
+stub('setMyCommands', function (commands) {
+  if (Array.isArray(commands)) {
+    registeredCommands = [...new Set([...registeredCommands, ...commands.map(c => c.command)])];
+  }
+  return Promise.resolve(true);
+});
 stub('getMe', function () {
   return Promise.resolve({ id: 42, is_bot: true, username: GROUP_BOT_USERNAME, first_name: 'QA' });
 });
@@ -243,6 +252,33 @@ async function pressEveryButton(chat, thread) {
 
   return broken.length === 0 ||
     `${broken.length} of ${pressable.length} buttons misbehaved: ${broken.slice(0, 6).join(' | ')}`;
+}
+
+// Type every command the bot advertises and see whether it answers, and where. A command
+// in the published list that does nothing is a broken promise to whoever pressed it.
+async function runEveryCommand(chat, thread) {
+  const names = registeredCommands.filter(name => !DESTRUCTIVE.test(name));
+  if (!names.length) return 'the bot published no commands to run';
+
+  const silent = [];
+  const strays = [];
+
+  for (const name of names) {
+    await settle(300);
+    let calls = await deliver(message(chat, `/${name}`, { thread }), { wait: 400 });
+    if (!calls.length) {
+      await new Promise(resolve => setTimeout(resolve, 1200));
+      calls = sent.slice();
+    }
+    if (!calls.length) { silent.push(name); continue; }
+    const wrong = calls.find(c => c.chat !== String(chat));
+    if (wrong) strays.push(`/${name} → ${wrong.chat}`);
+  }
+
+  const problems = [];
+  if (strays.length) problems.push(`answered the wrong chat: ${strays.join(', ')}`);
+  if (silent.length) problems.push(`said nothing: ${silent.map(n => '/' + n).join(', ')}`);
+  return problems.length === 0 || `${problems.join(' | ')} (of ${names.length} run)`;
 }
 
 const CASES = [
@@ -370,6 +406,16 @@ const CASES = [
   {
     name: 'menu: every button pressed in the direct chat answers there',
     run: () => pressEveryButton(DM_CHAT, null),
+  },
+
+  // ── Every command the bot publishes ────────────────────────────────────────
+  {
+    name: 'commands: every published command answers inside a topic',
+    run: () => runEveryCommand(GROUP_CHAT, 41),
+  },
+  {
+    name: 'commands: every published command answers in the direct chat',
+    run: () => runEveryCommand(DM_CHAT, null),
   },
 
   // ── Session commands inside a topic ────────────────────────────────────────

@@ -195,7 +195,7 @@ process.on('unhandledRejection', (err) => {
 });
 
 // Set bot commands menu. Named so the group bot can register the same list.
-const BOT_COMMANDS = [
+const ALL_COMMANDS = [
   { command: 'menu', description: '📱 Main menu (all categories)' },
   { command: 'settings', description: '⚙️ Quick settings' },
   { command: 'claude', description: '🤖 Claude session & settings' },
@@ -223,6 +223,14 @@ const BOT_COMMANDS = [
   { command: 'attach', description: '🔗 Attach to a live session' },
   { command: 'detach', description: '⏹ Detach (back to resume)' }
 ];
+
+// The attach pipe is macOS-only: off it, every one of these three returns without
+// answering. Publishing them anyway puts commands in the menu that do nothing when
+// pressed, which reads as a broken bot rather than a feature that isn't there.
+const ATTACH_ONLY = new Set(['pipe', 'attach', 'detach']);
+const BOT_COMMANDS = attachCommands.SUPPORTED
+  ? ALL_COMMANDS
+  : ALL_COMMANDS.filter(c => !ATTACH_ONLY.has(c.command));
 
 bot.setMyCommands(BOT_COMMANDS).then(() => {
   console.log('✅ Bot commands menu set');
