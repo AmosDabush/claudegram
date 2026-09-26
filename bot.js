@@ -30,6 +30,7 @@ const helpCommands = require('./lib/commands/help');
 const askCommands = require('./lib/commands/ask');
 const attachCommands = require('./lib/commands/attach');
 const gaggimateCommands = require('./lib/commands/gaggimate');
+const settingsNL = require('./lib/commands/settings-nl');
 
 // A QA run loads this file to drive the real handlers with synthetic updates. It must not
 // poll Telegram, must not take the running bot's place, and must leave no trace: no
@@ -203,6 +204,7 @@ process.on('unhandledRejection', (err) => {
 const ALL_COMMANDS = [
   { command: 'menu', description: '📱 Main menu (all categories)' },
   { command: 'settings', description: '⚙️ Quick settings' },
+  { command: 'set', description: '🗣 Change a setting in words ("/set קול אוטומטי")' },
   { command: 'claude', description: '🤖 Claude session & settings' },
   { command: 'model', description: '🧠 Switch Claude model' },
   { command: 'sessions', description: '📚 Browse & resume sessions' },
@@ -297,6 +299,7 @@ askCommands.register(bot, isAuthorized);
 helpCommands.register(bot, isAuthorized);
 gaggimateCommands.register(bot, isAuthorized);
 attachCommands.register(bot, isAuthorized);
+settingsNL.register(bot, isAuthorized);
 attachCommands.setRenderers({
   menu:   (b, c, m) => sendAllMenu(b, c, m),
   claude: (b, c, m) => sendClaudeSessionPanel(b, c, m)
@@ -983,6 +986,7 @@ async function handleCallbackQuery(bot, query) {
   if (helpCommands.handleCallback(bot, query, userState)) return;
   if (bookmarkCommands.handleCallback(bot, query, userState)) return;
   if (gaggimateCommands.handleCallback(bot, query)) return;   // own gag: namespace
+  if (settingsNL.handleCallback(bot, query, userState)) return;   // own nls: namespace
 
   // Handle quick settings callbacks
   if (data.startsWith('qset:')) {
@@ -1366,6 +1370,10 @@ async function handleIncomingMessage(bot, msg) {
   // Attached to a live session? Inject there instead of resuming.
   if (attachCommands.maybeRoute(bot, msg)) return;
 
+  // "אני רוצה קול" / "stream live" — a settings change stated in words. Only claims the
+  // message when it is unambiguously one; anything else falls through to Claude.
+  if (await settingsNL.maybeHandle(bot, msg, isAuthorized)) return;
+
   await claudeCommands.handleMessage(bot, msg, isAuthorized);
 }
 
@@ -1425,6 +1433,7 @@ if (GROUP_BOT_TOKEN) {
   askCommands.register(groupBot, isAuthorized);
   helpCommands.register(groupBot, isAuthorized);
   gaggimateCommands.register(groupBot, isAuthorized);
+  settingsNL.register(groupBot, isAuthorized);
 
   // With more than one bot in a group, Telegram appends @botname to every command the
   // menu inserts, so the text arrives as "/settings@some_bot". Handlers that anchor their
