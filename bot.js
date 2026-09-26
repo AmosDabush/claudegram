@@ -81,7 +81,11 @@ if (fs.existsSync(FILES.env)) {
   const envContent = fs.readFileSync(FILES.env, 'utf-8');
   envContent.split('\n').forEach(line => {
     const [key, ...vals] = line.split('=');
-    if (key && vals.length) process.env[key.trim()] = vals.join('=').trim();
+    // Anything already in the environment wins, as it does everywhere else: a file that
+    // overwrites it leaves no way to override a value for one run.
+    if (key && vals.length && process.env[key.trim()] === undefined) {
+      process.env[key.trim()] = vals.join('=').trim();
+    }
   });
 }
 

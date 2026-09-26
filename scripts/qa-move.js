@@ -27,7 +27,7 @@ const FRESH = '22222222-aaaa-bbbb-cccc-000000000002';      // has not
 fs.mkdirSync(DATA, { recursive: true });
 fs.writeFileSync(path.join(DATA, 'user-state.json'), JSON.stringify({
   users: {
-    '8046123315': { interactiveSessionId: 'dddddddd-0000-0000-0000-000000000000' },
+    '1000000001': { interactiveSessionId: 'dddddddd-0000-0000-0000-000000000000' },
     [`${GROUP}:41`]: { interactiveSessionId: IN_TOPIC },
   },
 }, null, 2));
@@ -59,7 +59,7 @@ const run = (args) => {
   const base = args.includes('--cwd') ? ['--dry-run'] : ['--cwd', CWD, '--dry-run'];
   try {
     return execFileSync(process.execPath, [SCRIPT, ...base, ...args], {
-      env: { ...process.env, CLAUDEGRAM_QA: '1', ALLOWED_USER_IDS: '8046123315', GROUP_CHAT_ID: GROUP },
+      env: { ...process.env, CLAUDEGRAM_QA: '1', ALLOWED_USER_IDS: '1000000001', GROUP_CHAT_ID: GROUP },
       encoding: 'utf-8',
     });
   } catch (err) {
@@ -99,7 +99,7 @@ const CASES = [
   {
     name: '--dm overrides a remembered topic',
     args: ['--session', IN_TOPIC, '--dm'],
-    check: (out) => /8046123315/.test(out) && /main bot/.test(out) || `--dm was ignored: ${out.split('\n')[0]}`,
+    check: (out) => /1000000001/.test(out) && /main bot/.test(out) || `--dm was ignored: ${out.split('\n')[0]}`,
   },
   {
     name: '--thread overrides a remembered topic',

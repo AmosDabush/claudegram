@@ -195,6 +195,131 @@ async function getClaudeBinPath() {
   return usePath.trim() || defaultPath;
 }
 
+/**
+ * The second bot: one supergroup, one topic per session.
+ *
+ * It has to be a second bot, not the same one twice. Telegram serves getUpdates to one
+ * consumer per token, so a single token cannot poll for a direct chat and a group at
+ * once — the two fight and both get 409s.
+ *
+ * The group chat id is the part nobody can look up by hand, so it is detected rather than
+ * asked for: once the bot is in the group and anything has been said, the id is in the
+ * first update it receives.
+ */
+function callTelegram(token, method, params = {}) {
+  const https = require('https');
+  return new Promise((resolve) => {
+    const body = JSON.stringify(params);
+    const req = https.request({
+      host: 'api.telegram.org',
+      path: `/bot${token}/${method}`,
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+    }, (res) => {
+      let data = '';
+      res.setEncoding('utf8');
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => {
+        try { resolve(JSON.parse(data)); } catch (e) { resolve({ ok: false, description: 'bad response' }); }
+      });
+    });
+    req.on('error', err => resolve({ ok: false, description: err.message }));
+    req.end(body);
+  });
+}
+
+async function detectGroupChat(token) {
+  print('\nWaiting for a message in the group...', 'cyan');
+  print('(send anything in any topic there — this reads it and stops)\n');
+
+  for (let attempt = 0; attempt < 30; attempt++) {
+    const updates = await callTelegram(token, 'getUpdates', { timeout: 0, limit: 20 });
+    if (updates.ok) {
+      for (const update of updates.result || []) {
+        const msg = update.message || update.edited_message || update.channel_post;
+        const chat = msg && msg.chat;
+        if (chat && (chat.type === 'supergroup' || chat.type === 'group')) {
+          print(`✅ Found the group: "${chat.title}" (${chat.id})`, 'green');
+          if (chat.type === 'group') {
+            print('⚠️  That is a plain group, not a supergroup — topics need a supergroup', 'yellow');
+            print('   In Telegram: group settings → enable Topics. It converts automatically.', 'cyan');
+          } else if (!chat.is_forum) {
+            print('⚠️  Topics are off in that group, so every session would share one thread', 'yellow');
+            print('   In Telegram: group settings → Topics → on', 'cyan');
+          }
+          return String(chat.id);
+        }
+      }
+    }
+    await new Promise(resolve => setTimeout(resolve, 2000));
+  }
+
+  print('⚠️  Nothing arrived in 60 seconds.', 'yellow');
+  return null;
+}
+
+async function getGroupBot() {
+  printHeader('👥 Second bot: a topic per session (optional)');
+
+  print('This is what lets you run several Claude sessions at once, each in its own', 'cyan');
+  print('Telegram topic, instead of one conversation in the direct chat.\n', 'cyan');
+  print('It needs a SECOND bot. Telegram only lets one connection poll a token, so one', 'bright');
+  print('bot cannot serve both the direct chat and the group.\n', 'bright');
+
+  const wanted = await question('Set it up now? (y/N): ');
+  if (wanted.toLowerCase() !== 'y' && wanted.toLowerCase() !== 'yes') {
+    print('Skipped. The direct chat works without it; rerun setup to add it later.', 'cyan');
+    return { groupToken: '', groupChat: '' };
+  }
+
+  print('\nSteps, in Telegram:', 'bright');
+  print('1. @BotFather → /newbot → make a SECOND bot, and copy its token');
+  print('2. Create a group, open its settings and turn Topics ON');
+  print('3. Add the new bot to that group');
+  print('4. Make it an admin, with "Manage Topics" allowed');
+  print('5. Turn Group Privacy OFF for it: @BotFather → /mybots → the new bot →');
+  print('   Bot Settings → Group Privacy → Turn off');
+  print('   (with privacy on, it only receives messages that start with a slash)\n');
+
+  let groupToken = '';
+  while (!groupToken) {
+    groupToken = (await question('Paste the second bot token (or Enter to skip): ')).trim();
+    if (!groupToken) return { groupToken: '', groupChat: '' };
+    if (!groupToken.match(/^\d+:[A-Za-z0-9_-]+$/)) {
+      print('❌ That does not look like a token. Expected 1234567890:ABCdef...', 'red');
+      groupToken = '';
+    }
+  }
+
+  const me = await callTelegram(groupToken, 'getMe');
+  if (!me.ok) {
+    print(`❌ Telegram rejected that token: ${me.description}`, 'red');
+    return { groupToken: '', groupChat: '' };
+  }
+  print(`✅ Token belongs to @${me.result.username}`, 'green');
+
+  let groupChat = await detectGroupChat(groupToken);
+  if (!groupChat) {
+    groupChat = (await question('Enter the group chat id by hand (or Enter to skip): ')).trim();
+  }
+
+  // Being an admin is not optional here: without Manage Topics it cannot open a topic for
+  // a session, and the failure only shows up much later, as a refusal from Telegram.
+  if (groupChat) {
+    const member = await callTelegram(groupToken, 'getChatMember', { chat_id: Number(groupChat), user_id: me.result.id });
+    if (member.ok && member.result.status !== 'administrator') {
+      print('⚠️  The bot is in the group but is not an admin — it cannot create topics', 'yellow');
+      print('   Group settings → Administrators → add it, with "Manage Topics"', 'cyan');
+    } else if (member.ok && !member.result.can_manage_topics) {
+      print('⚠️  It is an admin but without "Manage Topics", so it cannot open one', 'yellow');
+    } else if (member.ok) {
+      print('✅ Admin, with Manage Topics', 'green');
+    }
+  }
+
+  return { groupToken, groupChat };
+}
+
 async function createEnvFile(config) {
   const envPath = path.join(__dirname, '.env');
 
@@ -231,6 +356,15 @@ IDLE_TIMEOUT_HOURS=24
 # Claude CLI binary path
 # Path to directory containing claude executable
 CLAUDE_BIN_PATH=${config.claudePath}
+
+# Second bot: one supergroup, one topic per session. Leave both blank to run with
+# the direct chat alone. This must be a DIFFERENT bot from BOT_TOKEN above —
+# Telegram serves getUpdates to one consumer per token, so sharing one makes the
+# two poll loops fight and both get 409s.
+GROUP_BOT_TOKEN=${config.groupToken || ''}
+
+# The supergroup it lives in. Used when a session is moved into a topic.
+GROUP_CHAT_ID=${config.groupChat || ''}
 `;
 
   fs.writeFileSync(envPath, envContent);
@@ -361,12 +495,15 @@ async function main() {
     const botToken = await getBotToken();
     const userIds = await getUserIds();
     const claudePath = await getClaudeBinPath();
+    const { groupToken, groupChat } = await getGroupBot();
 
     // Step 3: Create .env file
     await createEnvFile({
       botToken,
       userIds,
-      claudePath
+      claudePath,
+      groupToken,
+      groupChat
     });
 
     // Step 4: Install dependencies

@@ -299,6 +299,49 @@ VOICE_STYLE_OPTIONS = [
 
 ---
 
+## Topics: one session per thread
+
+A Telegram forum topic is a thread inside one supergroup, so every topic shares a single
+chat id. All of this bot's state — sessions, modes, queues — is keyed by chat id alone,
+which would collapse every topic in a group into one conversation.
+
+Rather than thread a topic id through ~300 send sites, a topic gets a **synthetic chat
+key**: `"<chat>:<thread>"`. Existing code keeps treating that opaque string as a chat id
+and keys state off it, and `lib/topic-bot.js` splits it apart again at the moment of
+sending. A plain chat id passes through untouched, so direct messages behave exactly as
+before.
+
+Three consequences are worth knowing before changing anything here.
+
+**A key is a string, and must stay one.** `parseInt("-100123:7")` yields `-100123` — the
+group's own id — which silently folds every topic back into one state, each overwriting
+the last on the next save. `toChatKey()` exists for this; use it wherever chat ids come
+back from JSON, where object keys are always strings.
+
+**Replies route on the id, not on which bot received them.** `bot` in `bot.js` is a proxy:
+a send whose chat id starts with `-` goes out through the group bot, which is the only one
+that can resolve a synthetic key. Handlers therefore need to know nothing about topics —
+the same handler answers a direct chat, General, and a thread. Before this, anything
+answering `msg.chat.id` from inside a group handed the main bot an unroutable key, and
+even "⛔ Unauthorized" failed to arrive.
+
+**Handlers registered in `bot.js` need handing to the group bot too.** The command modules
+are registered against both, but the slash handlers written directly in `bot.js` are
+collected by `onCommand()` and replayed onto the group bot once it exists. Adding one with
+a bare `bot.onText(...)` makes it work in the direct chat and stay silent in every topic.
+
+Two Telegram behaviours shape the edges:
+
+- **`@botname` suffixes.** With more than one bot in a group, Telegram rewrites commands
+  as `/settings@some_bot`, which stops any `$`-anchored regex matching. The group bot
+  strips the suffix when it is the one addressed and ignores the update when it is not.
+- **Topics cannot be listed.** The API creates, edits and closes them, but no call
+  enumerates them. `lib/topics.js` keeps names as they go past — on the service message
+  when a topic is created, and on the first message of a thread — because that is the only
+  way to offer them by name later.
+
+---
+
 ## Callback System
 
 ### Callback Flow
@@ -402,6 +445,20 @@ if (claudeCommands.handleCallback(bot, query, userState)) return;
 ---
 
 ## Restart Mechanism
+
+**`/restart` hands the job to the wrapper; it does not relaunch itself.** `bot.js` exits
+with `RESTART_EXIT_CODE` (42) and `wrapper.js` brings it straight back, without spending
+the crash-retry budget. The exit code is what separates the three cases: 42 means restart,
+a non-zero code means crash and is retried, and 0 means `/close` and must stay down.
+
+It used to spawn the launcher detached and then exit. Windows does not keep that promise —
+a detached child still inherits its parent's job object, so whatever tears the tree down
+takes the launcher with it — and the launcher then had to kill an instance that was
+already leaving and re-open log files the dying wrapper could still hold. Each failure
+looked identical and silent: bot gone, nothing left to bring it back. It worked most
+times, which is worse than never.
+
+
 
 ### /restart (Normal)
 

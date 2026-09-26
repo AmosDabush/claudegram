@@ -12,6 +12,9 @@
  * thread belongs in that thread — that is where its history reads — and one that does not
  * should not have to interrupt somebody else's.
  *
+ * Wherever it lands, the direct chat also gets a copy, so the session is reachable from the
+ * chat the phone opens on: the same Resume button, plus a link into the topic it went to.
+ *
  * The counterpart of the Mac's scripts/move-to-telegram.sh, in node so one file serves
  * both platforms. The session folder is named after the working directory, and the two
  * platforms spell that differently — /Users/amos/git -> -Users-amos-git against
@@ -40,7 +43,11 @@ const envPath = path.join(BOT_DIR, '.env');
 if (fs.existsSync(envPath)) {
   for (const line of fs.readFileSync(envPath, 'utf-8').split('\n')) {
     const [key, ...rest] = line.split('=');
-    if (key && rest.length && !key.trim().startsWith('#')) process.env[key.trim()] = rest.join('=').trim();
+    if (!key || !rest.length || key.trim().startsWith('#')) continue;
+    // Anything already in the environment wins. A file that overwrites it cannot be
+    // overridden for a single run — not to point at a test fixture, not to send somewhere
+    // else once — and that is the opposite of what setting a variable is supposed to do.
+    if (process.env[key.trim()] === undefined) process.env[key.trim()] = rest.join('=').trim();
   }
 }
 
@@ -269,21 +276,68 @@ const payload = {
   ...(thread ? { message_thread_id: Number(thread) } : {}),
 };
 
+// ── The copy that always goes to the direct chat ─────────────────────────────
+// A session that moved into a topic is easy to lose: the phone opens on the chat list, not
+// on thread 158 of a group. So the direct chat keeps the index — every move leaves a line
+// there carrying both ways in, the Resume button and a link straight to the message in its
+// topic. The two buttons share one callback, so tapping both really does put two chats on
+// one session; that is the cost of having the session reachable from the chat you open
+// first, and it is the chosen trade.
+const dmChat = allowed[0];
+const dmCopyWanted = Boolean(dmChat) && String(chatId) !== String(dmChat);
+
+// t.me/c is how a private group addresses itself: the -100 prefix Telegram uses in the API
+// is not part of the link, and the thread id sits where a message id would in a group
+// without topics. Appending the message id lands on the button rather than the top of the
+// thread.
+function topicLink(chat, threadId, messageId) {
+  const internal = String(chat).replace(/^-100/, '').replace(/^-/, '');
+  return `https://t.me/c/${internal}/${threadId}${messageId ? `/${messageId}` : ''}`;
+}
+
+function dmPayload(link, topicName) {
+  const rows = [[{ text: '▶️ Resume Session', callback_data: `uresume:${shortId}` }]];
+  if (link) rows.push([{ text: '📂 Open in topic', url: link }]);
+  return {
+    chat_id: dmChat,
+    text: [
+      '🖥➡📱 Session from Terminal',
+      '',
+      `📁 Project: ${path.basename(cwd)}`,
+      `🔗 Session: ${shortId}`,
+      topicName ? `🧵 Topic: ${topicName}` : null,
+      '',
+      `💬 ${summary}`,
+      '',
+      link ? `Resume here, or open it where it landed:\n${link}` : 'Tap the button to continue:',
+    ].filter(v => v !== null).join('\n'),
+    reply_markup: { inline_keyboard: rows },
+  };
+}
+
 if (dryRun) {
   console.log(`would send to ${chatId}${thread ? ` topic ${thread}` : ''} via the ${toGroup ? 'group' : 'main'} bot`);
   console.log(`because: ${reason}${createTopic ? ' (created on send)' : ''}\n`);
   console.log(text);
   console.log(`\nbutton: uresume:${shortId}`);
   console.log(`would register: ${found.id}`);
+  if (dmCopyWanted) {
+    const link = topicLink(chatId, thread || '<new topic>', '<message id>');
+    console.log(`\n── and a copy to the direct chat (${dmChat}) ──`);
+    console.log(dmPayload(link, createTopic ? '<created on send>' : topics.nameFor(`${chatId}:${thread}`)).text);
+    console.log(`\nbuttons: uresume:${shortId} | ${link}`);
+  } else {
+    console.log('\nno direct-chat copy: this is already going to the direct chat');
+  }
   process.exit(0);
 }
 
-function call(method, params) {
+function call(method, params, useToken = token) {
   return new Promise((resolve, reject) => {
     const body = JSON.stringify(params);
     const req = https.request({
       host: 'api.telegram.org',
-      path: `/bot${token}/${method}`,
+      path: `/bot${useToken}/${method}`,
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
     }, (res) => {
@@ -318,7 +372,7 @@ function call(method, params) {
       console.log(`Created topic "${name}" (${created.message_thread_id})`);
     }
 
-    await call('sendMessage', payload);
+    const sent = await call('sendMessage', payload);
 
     // Remember where it landed, or "go back to its topic" can never come true: nothing
     // else records this. The bot writes a session against a chat only once that chat runs
@@ -338,6 +392,35 @@ function call(method, params) {
     const where = payload.message_thread_id ? ` → topic ${payload.message_thread_id}` : '';
     console.log(`Session sent to Telegram (${shortId})${where}`);
     console.log(`Sent to ${reason}.`);
+
+    // The copy goes out after the real send, and its failure is reported but not fatal: the
+    // session has already moved by this point, and exiting non-zero over a missing index
+    // line would read as "it did not move".
+    if (dmCopyWanted) {
+      const dmToken = process.env.BOT_TOKEN;
+      if (!dmToken) {
+        console.error('No copy to the direct chat: BOT_TOKEN is missing from .env');
+      } else {
+        const link = payload.message_thread_id
+          ? topicLink(chatId, payload.message_thread_id, sent && sent.message_id)
+          : null;
+        const name = payload.message_thread_id ? topics.nameFor(`${chatId}:${payload.message_thread_id}`) : null;
+        try {
+          await call('sendMessage', dmPayload(link, name), dmToken);
+          console.log(`Also in the direct chat${link ? `, with a link to the topic` : ''}.`);
+        } catch (err) {
+          // Telegram rejects a url button it will not render — an old client, a link shape
+          // it does not accept. The link is in the text too, so drop the button and retry
+          // rather than leave the direct chat without the session at all.
+          if (/BUTTON_URL/i.test(err.message)) {
+            await call('sendMessage', dmPayload(null, name), dmToken);
+            console.log('Also in the direct chat (link button refused, link is in the text).');
+          } else {
+            console.error(`No copy to the direct chat: ${err.message}`);
+          }
+        }
+      }
+    }
   } catch (err) {
     console.error(`Telegram refused it: ${err.message}`);
     process.exit(1);

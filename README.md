@@ -2,7 +2,12 @@
 
 Control [Claude Code](https://claude.ai/code) from your phone via Telegram. Full AI coding assistant in your pocket.
 
-Claudegram turns your Telegram into a mobile interface for Claude CLI running on your Mac. Send messages, manage sessions, get voice responses, run git commands, and keep coding from anywhere.
+Claudegram turns your Telegram into a mobile interface for the Claude CLI running on your
+own machine — macOS or Windows. Send messages, manage sessions, get voice responses, run
+git commands, and keep coding from anywhere.
+
+Run several sessions at once, each in its own Telegram topic with its own history and its
+own working directory, and move a session from your terminal to your phone mid-thought.
 
 ---
 
@@ -23,6 +28,15 @@ Claudegram turns your Telegram into a mobile interface for Claude CLI running on
 - **7 chunk presets** from instant-first-audio to full-message
 - Adjustable speech speed (-50% to +100%)
 - Voice style presets: normal, casual, very casual, bro
+
+### Several sessions at once
+- **A topic per session** - each Telegram forum topic is its own conversation, with its
+  own history, its own settings and its own working directory, so two sessions never
+  share a memory or answer into each other
+- **Move to Telegram** - send the session you are in from the terminal to your phone: it
+  arrives with a summary and a Resume button, and lands back in the topic it already
+  lived in, or a new one made for it
+- Needs the second bot; see [Install](#install)
 
 ### Session Management
 - **Resume any session** - Telegram or Mac terminal sessions
@@ -218,25 +232,55 @@ start.sh
 
 ## Requirements
 
-- **macOS** (uses caffeinate, iTerm integration)
+- **macOS or Windows.** Both are supported from one codebase. macOS additionally gets
+  `caffeinate`, iTerm integration and the live attach pipe; see
+  [Platform differences](#platform-differences).
 - **Node.js** 18+
-- **Claude CLI** installed (`~/.local/bin/claude`)
-- **Telegram account** + bot token from @BotFather
+- **Claude CLI** installed and working (`claude --version`)
+- **Telegram account**, and one or two bots from @BotFather
 
 ---
 
-## Quick Start
+## Install
 
 ```bash
 git clone https://github.com/AmosDabush/claudegram.git
 cd claudegram
 npm install
-cp .env.example .env
-# Edit .env with your BOT_TOKEN and ALLOWED_USER_IDS
-./start.sh
+node setup.js
 ```
 
-See [SETUP.md](./SETUP.md) for detailed step-by-step setup instructions.
+`setup.js` asks for everything it needs, writes `.env`, and can start the bot. Then
+`./start.sh` on macOS, `.\start.ps1` on Windows.
+
+**Four things nobody can do for you**, because they happen inside Telegram — the setup
+wizard tells you when each is needed:
+
+1. **Create the bot** in @BotFather (`/newbot`) and copy the token.
+2. **Get your user ID** from @userinfobot, so the bot answers you and nobody else.
+3. **For several sessions at once, create a SECOND bot.** Not the same one twice:
+   Telegram serves `getUpdates` to one consumer per token, so a shared token makes the
+   two poll loops fight and both get 409s.
+4. **Set that second bot up in the group**: turn Topics on, add the bot, make it an admin
+   with *Manage Topics*, and turn Group Privacy **off** (@BotFather → /mybots → Bot
+   Settings → Group Privacy). With privacy on it only receives messages starting with a
+   slash, so ordinary conversation never reaches it.
+
+`setup.js` detects the group's chat id for you — there is no way to read it off Telegram
+by hand — and checks the admin rights before it writes anything.
+
+See [SETUP.md](./SETUP.md) for the same ground step by step, and for doing it manually.
+
+### Installing with Claude
+
+Point Claude Code at this repository and it can do the whole install except the four
+steps above:
+
+> Install https://github.com/AmosDabush/claudegram on this machine.
+
+Claude should clone it, run `npm install`, walk you through `node setup.js`, and start the
+bot. Tell it up front whether you want the second bot, so it can prompt you for both
+tokens in one pass rather than sending you back to @BotFather twice.
 
 ---
 
@@ -248,8 +292,50 @@ See [SETUP.md](./SETUP.md) for detailed step-by-step setup instructions.
 |----------|----------|-------------|
 | `BOT_TOKEN` | Yes | Telegram bot token from @BotFather |
 | `ALLOWED_USER_IDS` | Yes | Comma-separated Telegram user IDs |
-| `IDLE_TIMEOUT_HOURS` | No | Hours before Mac can sleep (default: 24) |
-| `CLAUDE_BIN_PATH` | No | Path to Claude CLI (default: `~/.local/bin`) |
+| `GROUP_BOT_TOKEN` | No | A **second** bot's token, for a topic per session |
+| `GROUP_CHAT_ID` | No | The supergroup it lives in, e.g. `-1001234567890` |
+| `IDLE_TIMEOUT_HOURS` | No | Hours before the Mac can sleep (default: 24, macOS only) |
+| `CLAUDE_BIN_PATH` | No | Path to the Claude CLI (default: `~/.local/bin`) |
+| `PINNED_SESSION_ID` | No | Session `/resume_pinned` falls back to |
+| `STREAM_EDIT_MS` | No | Milliseconds between streaming edits (default: 1200, or 3500 in a group) |
+| `CLAUDEGRAM_SHARED_HOME` | No | `1` puts every chat back in one working directory |
+
+---
+
+## Platform differences
+
+Everything works on both unless listed here.
+
+| | macOS | Windows |
+|---|---|---|
+| Chat, sessions, topics, voice, git, menus | ✅ | ✅ |
+| Keeping the machine awake (`caffeinate`) | ✅ | Not needed — a desktop does not sleep on its own |
+| Visible terminal window (`/terminal`) | iTerm | ✅ |
+| Live attach pipe (`/attach`, `/pipe`, `/detach`) | ✅ | ❌ |
+
+The attach pipe drives a session that is *already running*, through a unix socket per
+session. Claude Code on Windows opens no such socket, so those commands are not published
+there rather than published and silent. `/resume` and *Move to Telegram* cover the same
+ground by picking a session back up instead of joining it live.
+
+---
+
+## Checking it works
+
+```bash
+node scripts/qa.js          # the bot: routing, menus, commands, sessions
+node scripts/qa-move.js     # move-to-telegram: where a moved session lands
+node scripts/parity-check.js  # platform branches still return the Mac's values
+```
+
+`qa.js` drives the real handlers with synthetic Telegram updates and asserts **where every
+reply lands** — the direct chat, General, or one particular topic. It has to work that way
+because a bot cannot drive itself: Telegram never delivers one bot's messages to another,
+and only a person can press an inline button. Outgoing calls are captured rather than
+sent, the Claude CLI is stubbed, and a run uses `data-qa/` instead of your real sessions,
+so it costs nothing and leaves nothing behind.
+
+Run these before sending a pull request. Both suites found real bugs on their first run.
 
 ---
 

@@ -9,6 +9,7 @@ A Telegram bot that provides a full interface to Claude Code CLI on macOS. Chat 
 1. [Getting Started](#getting-started)
 2. [Sending Messages](#sending-messages)
 3. [Session Management](#session-management)
+3a. [Several sessions at once](#several-sessions-at-once)
 4. [Interactive Mode](#interactive-mode)
 5. [Permission Modes](#permission-modes)
 6. [Voice and TTS](#voice-and-tts)
@@ -244,6 +245,70 @@ When persistence is **ON**, your active session is saved to disk and automatical
 ```
 [ 💾 Enable ] or [ 🔄 Disable ]
 ```
+
+---
+
+## Several sessions at once
+
+One Telegram forum topic is one Claude session. Talk in three topics and three
+conversations run side by side, each with its own history, its own settings, and its own
+working directory — so they never share a memory or answer into each other.
+
+This needs the second bot. Without `GROUP_BOT_TOKEN` the feature is simply off and the
+direct chat behaves exactly as it always has. See [SETUP.md](../SETUP.md) for creating it.
+
+### Using it
+
+- **Start a session** — open a topic in the group and write in it. The first message
+  starts a session there.
+- **Every command works inside a topic** — `/menu`, `/settings`, `/new`, `/resume`, the
+  lot. They answer in the topic they were called from.
+- **`/new` in a topic** replaces that topic's session and leaves the others alone.
+
+There is no menu button inside a group: Telegram only shows one in a direct chat. Inside a
+topic, type `/` for the command list.
+
+### Where each session runs
+
+Claude keeps its memory per working directory, not per session, so two chats sitting in
+the same directory would read and overwrite each other's notes. Each chat therefore gets
+its own directory under `~/claudegram-chats/<chat>` until you pick a project with `/cd`
+or the browser — choosing a project deliberately is what makes two chats share one, which
+is usually what you want when they are working on the same repository.
+
+`CLAUDEGRAM_SHARED_HOME=1` restores the old behaviour, where every chat starts in your
+home directory.
+
+### Moving a terminal session here
+
+From a Claude Code session on your machine:
+
+```bash
+node scripts/move-to-telegram.js
+```
+
+It sends a message with a summary and a **Resume Session** button. Tapping it picks the
+session up in the bot with its context intact, and you carry on from the phone.
+
+Where it goes, with no arguments: back to the topic that session last lived in, and if it
+has never been in one, into a topic created for it. It prints which it chose and why.
+
+| Flag | Effect |
+|---|---|
+| `--dm` | the direct chat instead |
+| `--chat <id> --thread <id>` | one particular existing topic |
+| `--new-topic [name]` | a fresh topic even if it already had one |
+| `--list-topics` | what the bot has handled, with names where it has seen them |
+| `--summary "…"` | your own summary instead of the last few messages |
+| `--dry-run` | print it, send nothing, register nothing |
+
+Telegram gives a bot no way to list a group's topics — the API creates, edits and closes
+them but never enumerates them — so `--list-topics` shows what the bot itself has seen,
+and `--new-topic` sidesteps the question entirely.
+
+**It resumes the session, it does not join it live.** Once it has moved, stop typing in
+the terminal: two writers appending to one transcript get tangled. To drive a session that
+is already running, that is the attach pipe (`/attach`), which is macOS-only.
 
 ---
 

@@ -425,6 +425,37 @@ bot.onText(/\/start myaction$/, (msg) => {
 
 ## Testing
 
+```bash
+node scripts/qa.js            # the bot: routing, menus, every published command, sessions
+node scripts/qa-move.js       # move-to-telegram: where a moved session lands
+node scripts/parity-check.js  # platform branches still return the Mac's values
+```
+
+Run all three before a pull request.
+
+`qa.js` loads the real `bot.js` with `CLAUDEGRAM_QA=1` — no polling, no pid file, no
+taking the running bot's place — and pushes synthetic updates through the same handlers
+Telegram would. It asserts **where each reply lands**, never the wording: the text is free
+to change, the destination is what keeps breaking. Outgoing API calls are captured instead
+of sent and the Claude CLI is stubbed, so a run costs nothing and writes only to
+`data-qa/`.
+
+It works this way because a bot cannot drive itself through Telegram: one bot never
+receives another's messages, and an inline button can only be pressed by a person.
+
+Two habits worth keeping:
+
+- **Read the surface, don't list it.** The button cases press whatever a menu offers and
+  the command cases run whatever the bot publishes, so something added later is covered
+  without anyone remembering. Destructive entries are filtered by name — a run that
+  presses `/restart` ends itself.
+- **Wait for the thing, not for a duration.** A button that redraws a menu answers in
+  milliseconds; one that calls out over HTTP takes a second or more. Fixed waits either
+  fail on a slow network or make every case pay for the slowest, and a suite that fails
+  randomly stops being read.
+
+
+
 ### Manual Testing Checklist
 
 1. **Command works:** `/mycommand` executes

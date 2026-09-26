@@ -21,11 +21,36 @@ The wizard will:
 - ✅ Check all dependencies
 - ✅ Guide you through getting bot token
 - ✅ Help you get your user ID
+- ✅ Optionally set up the second bot, for one topic per session
+- ✅ Detect your group's chat id, and check the bot's admin rights there
 - ✅ Create .env file automatically
 - ✅ Install packages
 - ✅ Test everything
 
 **That's it!** The wizard handles everything interactively.
+
+### What it cannot do for you
+
+Four things happen inside Telegram, where no script can reach. The wizard stops and tells
+you when each is needed:
+
+1. **Create the bot** — @BotFather → `/newbot` → copy the token.
+2. **Find your user ID** — @userinfobot replies with it.
+3. **Create a SECOND bot**, if you want several sessions at once. It must be a different
+   bot, not the same token twice: Telegram serves `getUpdates` to one consumer per token,
+   so sharing one makes the two poll loops fight and both get 409 errors.
+4. **Prepare the group** for that second bot:
+   - group settings → **Topics: on** (this makes it a supergroup, which topics require)
+   - add the bot to the group
+   - make it an **administrator**, with **Manage Topics** allowed — without that it
+     cannot open a topic for a session, and the failure only shows up later as a refusal
+     from Telegram
+   - @BotFather → `/mybots` → the second bot → Bot Settings → **Group Privacy → off**.
+     With privacy on, a bot only receives messages beginning with a slash, so ordinary
+     conversation never reaches it and the topic looks dead.
+
+The one thing you cannot look up by hand is the group's chat id. Leave the wizard running,
+say anything in the group, and it reads the id from the update it receives.
 
 ---
 
@@ -33,12 +58,30 @@ The wizard will:
 
 Before running setup, make sure you have:
 
-- **macOS** (tested on macOS 14+)
+- **macOS or Windows.** One codebase serves both. macOS also gets `caffeinate`, iTerm
+  integration and the live attach pipe; those are absent on Windows and the commands that
+  depend on them are not published there. Everything else is identical.
 - **Node.js 18+** - [Download here](https://nodejs.org/)
 - **Claude CLI** installed and working - [Installation guide](https://github.com/anthropics/claude-code)
 - **Telegram account** on your phone
 
 The setup wizard will check these for you.
+
+---
+
+## 🤖 Installing with Claude
+
+If you would rather hand this to Claude Code, give it the repository:
+
+> Install https://github.com/AmosDabush/claudegram on this machine.
+
+It can clone, install dependencies, run the wizard and start the bot. It cannot do the
+four Telegram steps above — so say up front whether you want the second bot, and it can
+collect both tokens in one pass instead of sending you back to @BotFather twice.
+
+Afterwards, ask it to run `node scripts/qa.js`. That exercises the routing, the menus and
+every published command without sending a single Telegram message, so a broken install
+shows up immediately rather than the first time you reach for a menu on your phone.
 
 ---
 

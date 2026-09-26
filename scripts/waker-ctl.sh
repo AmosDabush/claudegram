@@ -15,7 +15,7 @@ BOT_DIR="$HOME/.claude/telegram-bot"
 STATE_DIR="$BOT_DIR/data"
 INTERVAL_FILE="$STATE_DIR/waker.interval"
 CARETAKER="$BOT_DIR/scripts/caretaker.sh"
-LABEL="com.amosdabush.telegram-waker"
+LABEL="com.claudegram.telegram-waker"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 SUDOERS="/etc/sudoers.d/telegram-waker"
 
