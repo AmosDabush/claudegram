@@ -31,6 +31,7 @@ const askCommands = require('./lib/commands/ask');
 const attachCommands = require('./lib/commands/attach');
 const gaggimateCommands = require('./lib/commands/gaggimate');
 const settingsNL = require('./lib/commands/settings-nl');
+const stt = require('./lib/stt');
 
 // A QA run loads this file to drive the real handlers with synthetic updates. It must not
 // poll Telegram, must not take the running bot's place, and must leave no trace: no
@@ -263,6 +264,12 @@ if (!QA_MODE) try { require('./scripts/watch-cli-sessions'); } catch (e) { conso
 
 // Restore active sessions for users with persistSession enabled
 restoreActiveSessions();
+
+// Bringing the speech model up costs seconds on a CPU and can cost half a minute on a
+// cold GPU. Doing it here means that lands while nobody is waiting, instead of on the
+// first voice note of a drive. Off by default — it holds the model's memory on a machine
+// that may want it for something else.
+if (process.env.STT_PRELOAD === '1') stt.preload();
 
 // Send restart notification if pending
 if (fs.existsSync(FILES.restartNotify)) {
@@ -1334,6 +1341,55 @@ function handleLogCallback(bot, query, chatId) {
   }
 }
 
+// ===== Voice notes in, text out =====
+//
+// Dictating into the text field still ends with hunting for Send. Holding the mic and
+// letting go does not — which is the entire difference between usable and unusable at
+// the wheel. So a voice note is transcribed and then re-enters this same function as an
+// ordinary message: same settings parser, same session, same everything.
+//
+// The transcript is echoed back rather than swallowed, because whisper does mishear, and
+// finding out from the answer is far worse than reading one line.
+async function maybeTranscribe(bot, msg) {
+  const media = msg.voice || msg.audio || msg.video_note;
+  if (!media || msg.text) return false;
+  if (!isAuthorized(msg)) return true;
+
+  const chatId = msg.chat.id;
+  let notice = null;
+  try {
+    notice = await bot.sendMessage(chatId, '🎧 מתמלל...', { reply_to_message_id: msg.message_id });
+  } catch (e) {}
+
+  let file = null;
+  try {
+    file = await bot.downloadFile(media.file_id, require('os').tmpdir());
+    const text = (await stt.transcribe(file, process.env.STT_LANG || 'he')).trim();
+
+    if (!text) {
+      if (notice) bot.editMessageText('🤷 לא שמעתי כלום בהקלטה.', { chat_id: chatId, message_id: notice.message_id }).catch(() => {});
+      return true;
+    }
+
+    if (notice) bot.editMessageText(`🎙 _${text}_`, {
+      chat_id: chatId, message_id: notice.message_id, parse_mode: 'Markdown'
+    }).catch(() => {});
+
+    // Hand it back to the front door as text. voice must be cleared or this loops.
+    const asText = { ...msg, text, voice: undefined, audio: undefined, video_note: undefined };
+    await handleIncomingMessage(bot, asText);
+  } catch (e) {
+    console.log(`[STT] ${e.message}`);
+    const hint = /ENOENT|spawn/i.test(e.message) ? '\n(לא נמצא פייתון עם faster-whisper)' : '';
+    if (notice) {
+      bot.editMessageText(`⚠️ התמלול נכשל: ${e.message}${hint}`, { chat_id: chatId, message_id: notice.message_id }).catch(() => {});
+    }
+  } finally {
+    if (file) { try { fs.unlinkSync(file); } catch (e) {} }
+  }
+  return true;
+}
+
 // ===== Handle regular messages (Claude interaction) =====
 async function handleIncomingMessage(bot, msg) {
   // Update last activity timestamp for idle detection
@@ -1357,6 +1413,9 @@ async function handleIncomingMessage(bot, msg) {
       `${new Date().toISOString()} chat=${msg.chat.id} from=${msg.from?.id} ${kind} ${preview}\n`
     );
   } catch (e) {}
+
+  // A voice note is just a message that has not been read out yet.
+  if (await maybeTranscribe(bot, msg)) return;
 
   // Check if this is a bookmark reply first
   if (bookmarkCommands.handleReply(msg, bot)) return;
