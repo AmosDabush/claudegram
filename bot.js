@@ -14,6 +14,7 @@ const { FILES, TTS_ENGINES, VOICE_CHUNK_PRESETS, RESTART_EXIT_CODE } = require('
 const { getUserState, getAllUserStates, saveNow, getProjects, setSessionsModule, restoreActiveSessions, resetUserRuntime, resetAllUsersRuntime } = require('./lib/state');
 const { cleanupTempFiles, runQuickCommand, isGitRepo, tailFile } = require('./lib/utils');
 const sessions = require('./lib/sessions');
+const topics = require('./lib/topics');
 
 // Connect sessions module to state for persistence
 setSessionsModule(sessions);
@@ -1458,6 +1459,9 @@ if (GROUP_BOT_TOKEN) {
   };
 
   raw.on('message', (msg) => {
+    // Before retarget swaps the chat id for the synthetic key, while the thread id and any
+    // topic name are still on the message where this can read them.
+    topics.remember(msg);
     retarget(msg);
     handleIncomingMessage(groupBot, msg);
   });

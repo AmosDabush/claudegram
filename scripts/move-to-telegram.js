@@ -49,7 +49,46 @@ const thread = flag('thread');
 const dryRun = has('dry-run');
 
 const allowed = (process.env.ALLOWED_USER_IDS || '').split(',').map(s => s.trim()).filter(Boolean);
-const chatId = flag('chat') || allowed[0];
+
+// ── Where to send, without needing to know an id ─────────────────────────────
+// Telegram will not tell a bot which topics a group has: the API creates and edits them
+// but never lists them. So there are two honest answers. List the ones the bot has already
+// seen — it learns the name from the service message when a topic is created — or make a
+// new one, which needs no prior knowledge at all and gives the moved session a thread of
+// its own.
+const topics = require(path.join(BOT_DIR, 'lib', 'topics'));
+
+if (has('list-topics')) {
+  const named = topics.all();
+
+  // Names are only learned from messages seen since that was added, but the bot has been
+  // keying state per topic all along. Those keys are the complete list of topics it has
+  // ever handled, so a topic whose name was never seen is still worth offering by id.
+  const keys = new Set(Object.keys(named));
+  for (const file of ['user-state.json', 'sessions.json']) {
+    try {
+      const data = JSON.parse(fs.readFileSync(path.join(BOT_DIR, 'data', file), 'utf-8'));
+      Object.keys(data.users || data || {}).forEach(key => { if (key.includes(':')) keys.add(key); });
+    } catch (e) {}
+  }
+
+  if (!keys.size) {
+    console.log('No topics seen yet. The bot learns one when a message arrives from it,');
+    console.log('or skip the question entirely with --new-topic.');
+  } else {
+    console.log('Topics this bot has handled:\n');
+    for (const key of [...keys].sort()) {
+      const [chat, thread] = key.split(':');
+      console.log(`  --chat ${chat} --thread ${thread}   ${named[key] || '(name not seen yet)'}`);
+    }
+    console.log('\nNames fill in as messages arrive from each topic. --new-topic needs none of this.');
+  }
+  process.exit(0);
+}
+
+const newTopicName = flag('new-topic') || (has('new-topic') ? '' : null);
+const groupFromEnv = process.env.GROUP_CHAT_ID || null;
+const chatId = flag('chat') || (newTopicName !== null ? groupFromEnv : null) || allowed[0];
 
 if (!chatId) {
   console.error('No chat to send to: pass --chat, or set ALLOWED_USER_IDS in .env');
@@ -147,32 +186,56 @@ const payload = {
 };
 
 if (dryRun) {
-  console.log(`would send to ${chatId}${thread ? ` (topic ${thread})` : ''} via ${toGroup ? 'group' : 'main'} bot:\n`);
+  const where = newTopicName !== null
+    ? ' (a new topic, created on send)'
+    : thread ? ` (topic ${thread}${topics.nameFor(`${chatId}:${thread}`) ? ' — ' + topics.nameFor(`${chatId}:${thread}`) : ''})` : '';
+  console.log(`would send to ${chatId}${where} via ${toGroup ? 'group' : 'main'} bot:\n`);
   console.log(text);
   console.log(`\nbutton: uresume:${shortId}`);
   console.log(`would register: ${found.id}`);
   process.exit(0);
 }
 
-const body = JSON.stringify(payload);
-const req = https.request({
-  host: 'api.telegram.org',
-  path: `/bot${token}/sendMessage`,
-  method: 'POST',
-  headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
-}, (res) => {
-  let data = '';
-  res.setEncoding('utf8');
-  res.on('data', chunk => data += chunk);
-  res.on('end', () => {
-    let parsed = null;
-    try { parsed = JSON.parse(data); } catch (e) {}
-    if (parsed && parsed.ok) console.log(`Session sent to Telegram (${shortId})`);
-    else {
-      console.error(`Telegram refused it: ${(parsed && parsed.description) || data.slice(0, 200)}`);
-      process.exit(1);
-    }
+function call(method, params) {
+  return new Promise((resolve, reject) => {
+    const body = JSON.stringify(params);
+    const req = https.request({
+      host: 'api.telegram.org',
+      path: `/bot${token}/${method}`,
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+    }, (res) => {
+      let data = '';
+      res.setEncoding('utf8');
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => {
+        let parsed = null;
+        try { parsed = JSON.parse(data); } catch (e) {}
+        if (parsed && parsed.ok) resolve(parsed.result);
+        else reject(new Error((parsed && parsed.description) || data.slice(0, 200)));
+      });
+    });
+    req.on('error', reject);
+    req.end(body);
   });
-});
-req.on('error', (err) => { console.error(`Could not reach Telegram: ${err.message}`); process.exit(1); });
-req.end(body);
+}
+
+(async () => {
+  try {
+    if (newTopicName !== null) {
+      // A topic named for the work, so the thread is recognisable in the list later. The
+      // bot needs can_manage_topics in the group, which it has as an admin.
+      const name = (newTopicName || `${path.basename(cwd)} · ${summary}`).replace(/\s+/g, ' ').trim().slice(0, 128);
+      const created = await call('createForumTopic', { chat_id: Number(chatId), name });
+      payload.message_thread_id = created.message_thread_id;
+      console.log(`Created topic "${name}" (${created.message_thread_id})`);
+    }
+
+    await call('sendMessage', payload);
+    const where = payload.message_thread_id ? ` → topic ${payload.message_thread_id}` : '';
+    console.log(`Session sent to Telegram (${shortId})${where}`);
+  } catch (err) {
+    console.error(`Telegram refused it: ${err.message}`);
+    process.exit(1);
+  }
+})();

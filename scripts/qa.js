@@ -203,13 +203,28 @@ const settle = async (ms = 900) => {
   spawns.length = 0;
 };
 
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+// Wait for the thing, not for a duration. A button that only redraws a menu answers in
+// milliseconds; one that calls out to the espresso machine takes over a second, and a turn
+// takes longer still. A fixed wait either fails whenever the network is slow or makes
+// every case pay for the slowest one.
+const waitFor = async (predicate, timeout = 3000, step = 50) => {
+  for (let waited = 0; waited < timeout; waited += step) {
+    if (predicate(sent)) return true;
+    await sleep(step);
+  }
+  return predicate(sent);
+};
+
 // Which bot Telegram would hand this update to: the group bot owns groups.
-const deliver = async (update, { wait = 250, keep = false } = {}) => {
+const deliver = async (update, { wait = 250, keep = false, until = null } = {}) => {
   if (!keep) { sent.length = 0; spawns.length = 0; }
   const holder = update.message || (update.callback_query && update.callback_query.message);
   const target = holder.chat.id < 0 ? groupBot : bot;
   target.processUpdate(update);
-  await new Promise(resolve => setTimeout(resolve, wait));
+  if (until) await waitFor(until, wait);
+  else await sleep(wait);
   return sent.slice();
 };
 
@@ -237,14 +252,10 @@ async function pressEveryButton(chat, thread) {
   const broken = [];
   for (const data of pressable) {
     await settle();
-    let calls = await deliver(callback(chat, data, { thread }), { wait: 400 });
-    if (!calls.length) {
-      // A button that reaches something outside this process — the espresso machine, a
-      // local HTTP service — answers later than one that only redraws a menu. Give it a
-      // second window before calling it dead, or the suite fails on a slow network.
-      await new Promise(resolve => setTimeout(resolve, 1200));
-      calls = sent.slice();
-    }
+    const calls = await deliver(callback(chat, data, { thread }), {
+      wait: 4000,
+      until: recorded => recorded.length > 0,
+    });
     if (!calls.length) { broken.push(`${data} → nothing happened`); continue; }
     const stray = calls.find(c => c.chat !== String(chat));
     if (stray) broken.push(`${data} → ${stray.method} to ${stray.chat}: ${JSON.stringify(stray.text.slice(0, 50))}`);
@@ -265,11 +276,10 @@ async function runEveryCommand(chat, thread) {
 
   for (const name of names) {
     await settle(300);
-    let calls = await deliver(message(chat, `/${name}`, { thread }), { wait: 400 });
-    if (!calls.length) {
-      await new Promise(resolve => setTimeout(resolve, 1200));
-      calls = sent.slice();
-    }
+    const calls = await deliver(message(chat, `/${name}`, { thread }), {
+      wait: 4000,
+      until: recorded => recorded.length > 0,
+    });
     if (!calls.length) { silent.push(name); continue; }
     const wrong = calls.find(c => c.chat !== String(chat));
     if (wrong) strays.push(`/${name} → ${wrong.chat}`);
@@ -418,6 +428,22 @@ const CASES = [
     run: () => runEveryCommand(DM_CHAT, null),
   },
 
+  {
+    // Telegram will not list a group's topics to a bot, so the only way to offer them by
+    // name is to keep the name as it goes past. It rides on the service message when a
+    // topic is created and on the first message of a thread.
+    name: 'topics: a topic name is learned from the message that carries it',
+    run: async () => {
+      const topics = require(path.join(__dirname, '..', 'lib', 'topics'));
+      const update = message(GROUP_CHAT, 'first message in the new topic', { thread: 77 });
+      update.message.reply_to_message = { forum_topic_created: { name: 'QA named topic' } };
+
+      await deliver(update, { wait: 400 });
+      const learned = topics.nameFor(`${GROUP_CHAT}:77`);
+      return learned === 'QA named topic' || `the name was not kept: ${JSON.stringify(learned)}`;
+    },
+  },
+
   // ── The Resume button a moved session arrives with ─────────────────────────
   {
     // scripts/move-to-telegram.js registers the session and sends a uresume: button. The
@@ -482,7 +508,7 @@ const CASES = [
       spawns.length = 0;
       groupBot.processUpdate(message(GROUP_CHAT, 'marker-alpha', { thread: 41 }));
       groupBot.processUpdate(message(GROUP_CHAT, 'marker-beta', { thread: 86 }));
-      await new Promise(resolve => setTimeout(resolve, 1200));
+      await waitFor(recorded => recorded.filter(c => /marker-/.test(c.text)).length >= 2, 6000);
 
       const calls = sent.slice();
       const answers = calls.filter(c => /marker-/.test(c.text));
@@ -510,7 +536,7 @@ const CASES = [
       spawns.length = 0;
       groupBot.processUpdate(message(GROUP_CHAT, 'marker-group', { thread: 41 }));
       bot.processUpdate(message(DM_CHAT, 'marker-direct'));
-      await new Promise(resolve => setTimeout(resolve, 1200));
+      await waitFor(recorded => recorded.filter(c => /marker-/.test(c.text)).length >= 2, 6000);
 
       const answers = sent.filter(c => /marker-/.test(c.text));
       if (!answers.length) return 'neither turn produced an answer';
