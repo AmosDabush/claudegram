@@ -418,6 +418,28 @@ const CASES = [
     run: () => runEveryCommand(DM_CHAT, null),
   },
 
+  // ── The Resume button a moved session arrives with ─────────────────────────
+  {
+    // scripts/move-to-telegram.js registers the session and sends a uresume: button. The
+    // registration is the part that is easy to lose — without it the tap comes back
+    // "Session not found" — so the check is that a registered session resolves, and
+    // resolves into the topic the button was tapped in.
+    name: 'resume button: a moved session resumes in the topic it was tapped in',
+    run: async () => {
+      const unified = require(path.join(__dirname, '..', 'lib', 'unified-sessions'));
+      const id = 'qa11111-2222-3333-4444-555566667777';
+      unified.addSession({ id, source: 'cli', projectPath: process.cwd(), topic: 'QA moved session', messageCount: 1 });
+
+      const calls = await deliver(callback(GROUP_CHAT, `uresume:${id.slice(0, 8)}`, { thread: 41 }), { wait: 700 });
+      if (!calls.length) return 'tapping Resume did nothing';
+      if (calls.some(c => /not found/i.test(c.text))) {
+        return `the registered session did not resolve: ${calls.map(c => c.text.slice(0, 60)).join(' | ')}`;
+      }
+      const stray = calls.find(c => c.chat !== String(GROUP_CHAT));
+      return !stray || `Resume answered elsewhere: ${stray.chat}`;
+    },
+  },
+
   // ── Session commands inside a topic ────────────────────────────────────────
   {
     name: 'topic: /new starts a fresh session for that topic alone',
