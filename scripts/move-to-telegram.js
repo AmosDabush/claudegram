@@ -7,16 +7,23 @@
  * the phone. It resumes rather than joining live: once it has moved, typing in the
  * terminal too puts two writers in one session.
  *
+ * Where it goes, when nothing is specified: back to the topic this session was last used
+ * in, and if it has never been in one, into a topic created for it. A session that has a
+ * thread belongs in that thread — that is where its history reads — and one that does not
+ * should not have to interrupt somebody else's.
+ *
  * The counterpart of the Mac's scripts/move-to-telegram.sh, in node so one file serves
  * both platforms. The session folder is named after the working directory, and the two
  * platforms spell that differently — /Users/amos/git -> -Users-amos-git against
  * C:\Users\amos -> C--Users-amos — so the encoding is taken from lib/platform rather than
  * assumed.
  *
- *   node scripts/move-to-telegram.js
- *   node scripts/move-to-telegram.js --cwd "C:\\Users\\amos\\git\\claudegram" --summary "..."
- *   node scripts/move-to-telegram.js --chat -1004306041139 --thread 41
- *   node scripts/move-to-telegram.js --dry-run
+ *   node scripts/move-to-telegram.js                     back to its topic, or a new one
+ *   node scripts/move-to-telegram.js --dm                to the direct chat instead
+ *   node scripts/move-to-telegram.js --thread 41         into one particular topic
+ *   node scripts/move-to-telegram.js --new-topic "name"  always a fresh topic
+ *   node scripts/move-to-telegram.js --list-topics       what the bot has handled
+ *   node scripts/move-to-telegram.js --dry-run           show it, send nothing
  */
 
 const fs = require('fs');
@@ -26,6 +33,7 @@ const https = require('https');
 const BOT_DIR = path.join(__dirname, '..');
 const platform = require(path.join(BOT_DIR, 'lib', 'platform'));
 const unifiedSessions = require(path.join(BOT_DIR, 'lib', 'unified-sessions'));
+const topics = require(path.join(BOT_DIR, 'lib', 'topics'));
 
 // ── .env, read the same way bot.js reads it ──────────────────────────────────
 const envPath = path.join(BOT_DIR, '.env');
@@ -36,7 +44,6 @@ if (fs.existsSync(envPath)) {
   }
 }
 
-// ── Arguments ────────────────────────────────────────────────────────────────
 const argv = process.argv.slice(2);
 const flag = (name) => {
   const i = argv.indexOf(`--${name}`);
@@ -45,62 +52,47 @@ const flag = (name) => {
 const has = (name) => argv.includes(`--${name}`);
 
 const cwd = flag('cwd') || process.cwd();
-const thread = flag('thread');
 const dryRun = has('dry-run');
-
 const allowed = (process.env.ALLOWED_USER_IDS || '').split(',').map(s => s.trim()).filter(Boolean);
 
-// ── Where to send, without needing to know an id ─────────────────────────────
-// Telegram will not tell a bot which topics a group has: the API creates and edits them
-// but never lists them. So there are two honest answers. List the ones the bot has already
-// seen — it learns the name from the service message when a topic is created — or make a
-// new one, which needs no prior knowledge at all and gives the moved session a thread of
-// its own.
-const topics = require(path.join(BOT_DIR, 'lib', 'topics'));
+// Through config, not a hardcoded 'data': lib/topics already resolves that way, and a
+// script that reads half its state from one directory and half from another cannot be
+// pointed at a test fixture — or at a second checkout — without lying about what it found.
+const { DATA_DIR } = require(path.join(BOT_DIR, 'lib', 'config'));
+
+const readJson = (file) => {
+  try { return JSON.parse(fs.readFileSync(path.join(DATA_DIR, file), 'utf-8')); } catch (e) { return null; }
+};
+
+// ── Which chats the bot knows ────────────────────────────────────────────────
+// Telegram will not list a group's topics to a bot — the API creates, edits and closes
+// them but never enumerates them — so the only list available is the one the bot builds
+// from what it has handled. Three places record it, and all three are worth reading: a
+// topic may have been used before any of them existed.
+function knownChatKeys() {
+  const keys = new Set(Object.keys(topics.all()));
+  const state = readJson('user-state.json');
+  if (state) Object.keys(state.users || {}).forEach(key => keys.add(key));
+  const sessions = readJson('sessions.json');
+  if (sessions) Object.keys(sessions).forEach(key => keys.add(key));
+  return [...keys].filter(key => key.includes(':'));
+}
 
 if (has('list-topics')) {
   const named = topics.all();
-
-  // Names are only learned from messages seen since that was added, but the bot has been
-  // keying state per topic all along. Those keys are the complete list of topics it has
-  // ever handled, so a topic whose name was never seen is still worth offering by id.
-  const keys = new Set(Object.keys(named));
-  for (const file of ['user-state.json', 'sessions.json']) {
-    try {
-      const data = JSON.parse(fs.readFileSync(path.join(BOT_DIR, 'data', file), 'utf-8'));
-      Object.keys(data.users || data || {}).forEach(key => { if (key.includes(':')) keys.add(key); });
-    } catch (e) {}
-  }
-
-  if (!keys.size) {
+  const keys = knownChatKeys();
+  if (!keys.length) {
     console.log('No topics seen yet. The bot learns one when a message arrives from it,');
-    console.log('or skip the question entirely with --new-topic.');
+    console.log('and --new-topic needs none of this.');
   } else {
     console.log('Topics this bot has handled:\n');
-    for (const key of [...keys].sort()) {
+    for (const key of keys.sort()) {
       const [chat, thread] = key.split(':');
       console.log(`  --chat ${chat} --thread ${thread}   ${named[key] || '(name not seen yet)'}`);
     }
-    console.log('\nNames fill in as messages arrive from each topic. --new-topic needs none of this.');
+    console.log('\nNames fill in as messages arrive from each topic.');
   }
   process.exit(0);
-}
-
-const newTopicName = flag('new-topic') || (has('new-topic') ? '' : null);
-const groupFromEnv = process.env.GROUP_CHAT_ID || null;
-const chatId = flag('chat') || (newTopicName !== null ? groupFromEnv : null) || allowed[0];
-
-if (!chatId) {
-  console.error('No chat to send to: pass --chat, or set ALLOWED_USER_IDS in .env');
-  process.exit(1);
-}
-
-// A group or a topic can only be reached by the bot that is a member of it.
-const toGroup = String(chatId).startsWith('-');
-const token = toGroup && process.env.GROUP_BOT_TOKEN ? process.env.GROUP_BOT_TOKEN : process.env.BOT_TOKEN;
-if (!token) {
-  console.error(`No token for that destination (${toGroup ? 'GROUP_BOT_TOKEN' : 'BOT_TOKEN'} is missing from .env)`);
-  process.exit(1);
 }
 
 // ── Which session ────────────────────────────────────────────────────────────
@@ -116,19 +108,112 @@ function newestSession(projectDir) {
 
 const projectDir = path.join(platform.PROJECTS_DIR, platform.encodeProjectPath(cwd));
 const explicitId = flag('session');
-const found = explicitId
-  ? { id: explicitId, file: path.join(projectDir, `${explicitId}.jsonl`) }
-  : newestSession(projectDir);
+let found = null;
+
+if (explicitId) {
+  // Check it is really there. Taking the id on trust sends a Resume button for a session
+  // that cannot be resumed, and the tap fails minutes later on the phone — the exact
+  // failure this is supposed to prevent. A transcript lives in the folder named after the
+  // directory its session ran in, so a wrong --cwd looks the same as a wrong id.
+  const file = path.join(projectDir, `${explicitId}.jsonl`);
+  if (fs.existsSync(file)) found = { id: explicitId, file };
+} else {
+  found = newestSession(projectDir);
+}
 
 if (!found) {
-  console.error(`No session transcript under ${projectDir}`);
+  console.error(explicitId
+    ? `No transcript for session ${explicitId} under ${projectDir}`
+    : `No session transcript under ${projectDir}`);
   console.error('Pass --cwd with the directory the session was started in.');
   process.exit(1);
 }
 
+// ── Has this session been in a topic before? ─────────────────────────────────
+// Three records answer it, written at different times by different parts of the bot. The
+// per-chat state is the freshest — it holds the session each chat is on right now — so it
+// is asked first, then the history, then the registry.
+function previousTopicOf(sessionId) {
+  const state = readJson('user-state.json');
+  if (state) {
+    for (const [key, value] of Object.entries(state.users || {})) {
+      if (key.includes(':') && value && value.interactiveSessionId === sessionId) return key;
+    }
+  }
+
+  const sessions = readJson('sessions.json');
+  if (sessions) {
+    for (const [key, history] of Object.entries(sessions)) {
+      if (key.includes(':') && Array.isArray(history) && history.some(h => h && h.sessionId === sessionId)) return key;
+    }
+  }
+
+  try {
+    const match = unifiedSessions.getAllSessions()
+      .find(s => s.id === sessionId && s.sourceId && String(s.sourceId).includes(':'));
+    if (match) return String(match.sourceId);
+  } catch (e) {}
+
+  return null;
+}
+
+// ── Where to send ────────────────────────────────────────────────────────────
+const explicitChat = flag('chat');
+const explicitThread = flag('thread');
+const wantsNewTopic = has('new-topic');
+const newTopicName = flag('new-topic');
+
+// Every topic key carries its group, so the group id never has to be configured.
+const groupId = process.env.GROUP_CHAT_ID ||
+  (knownChatKeys()[0] || '').split(':')[0] ||
+  null;
+
+const previous = previousTopicOf(found.id);
+
+let chatId;
+let thread = explicitThread;
+let createTopic = false;
+let reason;
+
+if (explicitChat || explicitThread) {
+  chatId = explicitChat || (previous || '').split(':')[0] || groupId;
+  createTopic = wantsNewTopic;
+  reason = wantsNewTopic ? 'a new topic, as asked' : 'the topic you named';
+} else if (wantsNewTopic) {
+  chatId = groupId;
+  createTopic = true;
+  reason = 'a new topic, as asked';
+} else if (has('dm')) {
+  chatId = allowed[0];
+  reason = 'the direct chat, as asked';
+} else if (previous) {
+  [chatId, thread] = previous.split(':');
+  const name = topics.nameFor(previous);
+  reason = `the topic this session was last in${name ? ` — ${name}` : ''}`;
+} else if (groupId) {
+  chatId = groupId;
+  createTopic = true;
+  reason = 'a new topic: this session has never been in one';
+} else {
+  chatId = allowed[0];
+  reason = 'the direct chat: no group is known';
+}
+
+if (!chatId) {
+  console.error('Nowhere to send: pass --chat, or set ALLOWED_USER_IDS in .env');
+  process.exit(1);
+}
+
+const toGroup = String(chatId).startsWith('-');
+const token = toGroup && process.env.GROUP_BOT_TOKEN ? process.env.GROUP_BOT_TOKEN : process.env.BOT_TOKEN;
+if (!token) {
+  console.error(`No token for that destination (${toGroup ? 'GROUP_BOT_TOKEN' : 'BOT_TOKEN'} is missing from .env)`);
+  process.exit(1);
+}
+
 // ── Summary ──────────────────────────────────────────────────────────────────
-// Given one, use it. Otherwise quote what was last asked, which is enough to recognise
-// the conversation on a phone without pretending to be a real summary.
+// Given one, use it. Otherwise quote what was last asked, which is enough to recognise the
+// conversation on a phone without pretending to be a real summary.
 function lastAsked(file, count = 3) {
   try {
     const lines = fs.readFileSync(file, 'utf-8').split('\n').filter(Boolean);
@@ -153,10 +238,9 @@ function lastAsked(file, count = 3) {
 const summary = flag('summary') || lastAsked(found.file) || '(no summary)';
 const shortId = found.id.slice(0, 8);
 
-// ── Register, so the button can resolve ──────────────────────────────────────
-// uresume: looks the short id up in the unified registry. Skipping this is what makes a
-// freshly moved session answer "Session not found" when the button is tapped. A dry run
-// registers nothing: it is there to show what would happen, not to half do it.
+// uresume: carries only the short id and resolves it in the unified registry. Skipping
+// this is what makes a freshly moved session answer "Session not found" when tapped. A dry
+// run registers nothing: it is there to show what would happen, not to half do it.
 if (!dryRun) {
   unifiedSessions.addSession({
     id: found.id,
@@ -186,10 +270,8 @@ const payload = {
 };
 
 if (dryRun) {
-  const where = newTopicName !== null
-    ? ' (a new topic, created on send)'
-    : thread ? ` (topic ${thread}${topics.nameFor(`${chatId}:${thread}`) ? ' — ' + topics.nameFor(`${chatId}:${thread}`) : ''})` : '';
-  console.log(`would send to ${chatId}${where} via ${toGroup ? 'group' : 'main'} bot:\n`);
+  console.log(`would send to ${chatId}${thread ? ` topic ${thread}` : ''} via the ${toGroup ? 'group' : 'main'} bot`);
+  console.log(`because: ${reason}${createTopic ? ' (created on send)' : ''}\n`);
   console.log(text);
   console.log(`\nbutton: uresume:${shortId}`);
   console.log(`would register: ${found.id}`);
@@ -222,18 +304,24 @@ function call(method, params) {
 
 (async () => {
   try {
-    if (newTopicName !== null) {
-      // A topic named for the work, so the thread is recognisable in the list later. The
-      // bot needs can_manage_topics in the group, which it has as an admin.
+    if (createTopic) {
+      // Named for the work, so the thread is recognisable in the list later. The bot needs
+      // can_manage_topics in the group, which it has as an admin.
       const name = (newTopicName || `${path.basename(cwd)} · ${summary}`).replace(/\s+/g, ' ').trim().slice(0, 128);
       const created = await call('createForumTopic', { chat_id: Number(chatId), name });
       payload.message_thread_id = created.message_thread_id;
+      topics.remember({
+        chat: { id: Number(chatId) },
+        message_thread_id: created.message_thread_id,
+        forum_topic_created: { name },
+      });
       console.log(`Created topic "${name}" (${created.message_thread_id})`);
     }
 
     await call('sendMessage', payload);
     const where = payload.message_thread_id ? ` → topic ${payload.message_thread_id}` : '';
     console.log(`Session sent to Telegram (${shortId})${where}`);
+    console.log(`Sent to ${reason}.`);
   } catch (err) {
     console.error(`Telegram refused it: ${err.message}`);
     process.exit(1);
