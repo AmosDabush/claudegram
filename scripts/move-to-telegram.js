@@ -319,6 +319,22 @@ function call(method, params) {
     }
 
     await call('sendMessage', payload);
+
+    // Remember where it landed, or "go back to its topic" can never come true: nothing
+    // else records this. The bot writes a session against a chat only once that chat runs
+    // a turn, and a message carrying a button has not run one yet — so the next move would
+    // open a second topic for a session that already has one.
+    if (payload.message_thread_id) {
+      unifiedSessions.addSession({
+        id: found.id,
+        source: 'cli',
+        sourceId: `${chatId}:${payload.message_thread_id}`,
+        projectPath: cwd,
+        topic: summary.slice(0, 50),
+        messageCount: 1,
+      });
+    }
+
     const where = payload.message_thread_id ? ` → topic ${payload.message_thread_id}` : '';
     console.log(`Session sent to Telegram (${shortId})${where}`);
     console.log(`Sent to ${reason}.`);

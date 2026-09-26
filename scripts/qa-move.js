@@ -34,13 +34,21 @@ fs.writeFileSync(path.join(DATA, 'user-state.json'), JSON.stringify({
 fs.writeFileSync(path.join(DATA, 'sessions.json'), JSON.stringify({}, null, 2));
 fs.writeFileSync(path.join(DATA, 'topics.json'), JSON.stringify({ [`${GROUP}:41`]: 'Named topic' }, null, 2));
 
+// A session that was moved once and has not been talked to since is only recorded in the
+// registry, by the move itself. Nothing else knows about it yet, so this is the record
+// that has to carry "go back to its topic" the second time.
+const MOVED = '33333333-aaaa-bbbb-cccc-000000000003';
+fs.writeFileSync(path.join(DATA, 'unified-sessions.json'), JSON.stringify({
+  sessions: [{ id: MOVED, source: 'cli', sourceId: `${GROUP}:151`, projectPath: '/anywhere', topic: 'moved once', messageCount: 1 }],
+}, null, 2));
+
 // ── A transcript for each session, so the script has something to find ───────
 const platform = require(path.join(BOT_DIR, 'lib', 'platform'));
 const CWD = path.join(os.tmpdir(), 'claudegram-qa-move');
 fs.mkdirSync(CWD, { recursive: true });
 const projectDir = path.join(platform.PROJECTS_DIR, platform.encodeProjectPath(CWD));
 fs.mkdirSync(projectDir, { recursive: true });
-for (const id of [IN_TOPIC, FRESH]) {
+for (const id of [IN_TOPIC, FRESH, MOVED]) {
   fs.writeFileSync(path.join(projectDir, `${id}.jsonl`),
     JSON.stringify({ type: 'user', message: { role: 'user', content: 'qa prompt' } }) + '\n');
 }
@@ -71,6 +79,15 @@ const CASES = [
     name: 'and says which topic, by name',
     args: ['--session', IN_TOPIC],
     check: (out) => /Named topic/.test(out) || 'the reason did not name the topic',
+  },
+  {
+    // The second move of a session that was only ever moved, never talked to. Its topic
+    // exists solely because the first move made it, so the registry is the only record.
+    name: 'a session moved once goes back there, not into a second new topic',
+    args: ['--session', MOVED],
+    check: (out) =>
+      (/topic 151/.test(out) && !/created on send/.test(out)) ||
+      `expected topic 151, got: ${out.split('\n').slice(0, 2).join(' / ')}`,
   },
   {
     name: 'a session that never had one gets a new topic',
