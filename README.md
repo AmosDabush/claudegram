@@ -28,6 +28,16 @@ own working directory, and move a session from your terminal to your phone mid-t
 - **7 chunk presets** from instant-first-audio to full-message
 - Adjustable speech speed (-50% to +100%)
 - Voice style presets: normal, casual, very casual, bro
+- **Voice notes in** (optional, off by default) — record a message and it is transcribed
+  locally and treated exactly like a typed one. Dictating into the text field still ends
+  with finding and tapping Send; holding the mic and letting go does not, which is the
+  whole difference at the wheel. See [Voice notes in](#voice-notes-in).
+
+### Settings in plain language
+- Say what you want changed and it changes: `קול אוטומטי`, `stream live`, `speed slow`
+- Name a setting without a value and you get **one** question with the answers as buttons
+- Hebrew and English, and it survives dictation
+- A message that is not a settings request goes to Claude untouched
 
 ### Several sessions at once
 - **A topic per session** - each Telegram forum topic is its own conversation, with its
@@ -197,12 +207,39 @@ own working directory, and move a session from your terminal to your phone mid-t
 The `/settings` command shows an inline panel where you can toggle everything with one tap:
 
 - **Voice**: off / on / auto
+- **Rec→Text**: off / on — transcribe voice notes you send (see below)
 - **Text Style**: default / concise / code focus / no emoji
 - **Voice Style**: normal / casual / very casual / bro
 - **Thought**: off / on / auto
 - **Session**: on-demand / session
 - **Mode**: default / fast / plan / yolo
 - **Interactive**: off / on
+
+Or just say it: `קול אוטומטי`, `סטרים לייב`, `speed slow`. Name a setting without a value
+and the bot asks one question instead of making you find the row.
+
+---
+
+## Voice notes in
+
+Off by default. Turn it on in `/settings` or by saying `תמלול דלוק`.
+
+Once on, a voice message you send is transcribed and handed back to the bot as ordinary
+text — same routing, same session, and the settings sentences above work spoken too. The
+transcript is echoed back before the answer, because speech recognition does mishear and
+finding out from the reply is worse than reading one line.
+
+It runs locally through faster-whisper and ffmpeg: nothing leaves the machine, no API key,
+no quota. It uses a CUDA card if it finds one and the CPU otherwise — the CPU path is
+normal on a Mac, not an error case, and `STT_MODEL` is the knob worth turning per host.
+
+This is the only feature with dependencies outside npm, which is exactly why it ships off:
+installing a Telegram bridge for Claude should not drag in a python package and a gigabyte
+of model weights. Switching it on checks the host first and names anything missing.
+
+```bash
+pip install faster-whisper     # plus ffmpeg on PATH
+```
 
 ---
 
@@ -238,6 +275,8 @@ start.sh
 - **Node.js** 18+
 - **Claude CLI** installed and working (`claude --version`)
 - **Telegram account**, and one or two bots from @BotFather
+- *Optional, only for transcribing voice notes:* **Python** with `faster-whisper`, and
+  **ffmpeg** on PATH. Not needed otherwise — the feature is off until you turn it on.
 
 ---
 

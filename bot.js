@@ -465,6 +465,7 @@ function sendQuickSettings(bot, chatId, messageId = null) {
   const interactive = userState.interactiveMode ? 'on' : 'off';
   const textStyle = userState.voiceSettings?.textStyle || 'off';
   const voiceStyle = userState.voiceSettings?.responseLevel || 'off';
+  const sttMode = userState.sttMode || 'off';
 
   // Icons for current state
   const voiceIcons = { off: '🔇', on: '🔊', auto: '🔊' };
@@ -483,6 +484,13 @@ function sendQuickSettings(bot, chatId, messageId = null) {
       { text: voiceMode === 'off' ? '● off' : 'off', callback_data: 'qset:voice:off' },
       { text: voiceMode === 'on' ? '● on' : 'on', callback_data: 'qset:voice:on' },
       { text: voiceMode === 'auto' ? '● auto' : 'auto', callback_data: 'qset:voice:auto' }
+    ],
+    // Voice notes IN — the other direction from the row above, and the only row here
+    // that depends on something outside npm, so it ships off and says why when switched on.
+    [
+      { text: `Rec→Text: ${sttMode === 'on' ? '🎧' : '🚫'}`, callback_data: 'noop' },
+      { text: sttMode === 'off' ? '● off' : 'off', callback_data: 'qset:stt:off' },
+      { text: sttMode === 'on' ? '● on' : 'on', callback_data: 'qset:stt:on' }
     ],
     // Text Style row (shown when voice is off/on)
     [
@@ -1006,6 +1014,10 @@ async function handleCallbackQuery(bot, query) {
       userState.voiceMode = value;
       userState.voiceEnabled = value !== 'off';
       scheduleSave();
+    } else if (setting === 'stt') {
+      // Routed through the settings module so the panel and a spoken "תמלול דלוק" run
+      // the same code — including the check for what the host is actually missing.
+      settingsNL.applySetting(bot, chatId, userState, 'stt', value);
     } else if (setting === 'thought') {
       userState.thoughtMode = value;
       scheduleSave();
@@ -1356,6 +1368,22 @@ async function maybeTranscribe(bot, msg) {
   if (!isAuthorized(msg)) return true;
 
   const chatId = msg.chat.id;
+
+  // Ships off. A voice note that arrives anyway gets an explanation and a way in, once —
+  // silently ignoring it would look like the bot is broken, and silently transcribing it
+  // would mean installing things on someone's behalf that they never agreed to.
+  if ((getUserState(chatId).sttMode || 'off') !== 'on') {
+    bot.sendMessage(chatId,
+      '🎙 קיבלתי הקלטה, אבל תמלול הקלטות כבוי.\n\n' +
+      'זה רץ מקומית על המכונה שמריצה את הבוט ודורש התקנה חד־פעמית, ולכן הוא לא דלוק מראש.',
+      {
+        reply_to_message_id: msg.message_id,
+        reply_markup: { inline_keyboard: [[{ text: '🎧 הפעל תמלול', callback_data: 'nls:v:stt:1' }]] }
+      }
+    ).catch(() => {});
+    return true;
+  }
+
   let notice = null;
   try {
     notice = await bot.sendMessage(chatId, '🎧 מתמלל...', { reply_to_message_id: msg.message_id });
