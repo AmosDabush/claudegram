@@ -78,7 +78,12 @@ if (process.platform === 'darwin') {
 
   const sc = P.shellCommand('echo hi');
   ok('shellCommand    -> powershell', sc.file === 'powershell.exe', JSON.stringify(sc));
-  ok('spawnOpts       -> shell:true (claude.cmd is a shim)', P.spawnOpts().shell === true);
+  // Was shell:true, back when claude on Windows was a .cmd shim that spawn()
+  // could not run directly. claudeBin() returns claude.exe now, so the shell is
+  // not needed on either platform — and the check kept failing for a design that
+  // had already been replaced, which is worse than no check at all.
+  ok('spawnOpts       == {} (claudeBin is a real exe)',
+     Object.keys(P.spawnOpts()).length === 0, JSON.stringify(P.spawnOpts()));
 
   eq('encodeProjectPath("C:\\\\Users\\\\amos")', P.encodeProjectPath('C:\\Users\\amos'), 'C--Users-amos');
   const dr = P.decodeRoot('C--Users-amos');

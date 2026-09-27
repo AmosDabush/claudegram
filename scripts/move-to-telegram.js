@@ -170,7 +170,12 @@ const explicitThread = flag('thread');
 const wantsNewTopic = has('new-topic');
 const newTopicName = flag('new-topic');
 
-// Every topic key carries its group, so the group id never has to be configured.
+// Every topic key carries its group, so the group can be read back out of one the
+// bot has already handled. That is a fallback and not the rule, which is what this
+// used to claim: the history it reads is local, so it only exists on a machine the
+// bot itself has run on. On a second machine there is nothing to read, no group is
+// found, and every session quietly goes to the direct chat instead of a topic —
+// which looks like topics being broken rather than a setting being blank.
 const groupId = process.env.GROUP_CHAT_ID ||
   (knownChatKeys()[0] || '').split(':')[0] ||
   null;
