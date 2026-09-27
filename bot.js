@@ -1467,6 +1467,23 @@ async function handleIncomingMessage(bot, msg) {
     );
   } catch (e) {}
 
+  // A settings panel that was tried as a reply keyboard and taken back out again. A
+  // reply keyboard lives on the phone, not in this process: it was sent with
+  // is_persistent, so removing the code that sent it left it sitting in every chat the
+  // bot had answered in, with nothing left here that could take it down. Its buttons
+  // then arrive as ordinary text -- '✕ Close settings' reaching Claude as a prompt.
+  //
+  // Answering that one label with remove_keyboard is the only way back: the keyboard
+  // goes, and with it the rest of its buttons. Kept for chats that have not pressed it
+  // yet, and harmless once none are left.
+  if (msg.text === '✕ Close settings') {
+    await bot.sendMessage(msg.chat.id, '⚙️ Settings closed', {
+      reply_markup: { remove_keyboard: true },
+      ...(msg.message_thread_id ? { message_thread_id: msg.message_thread_id } : {})
+    });
+    return;
+  }
+
   // A voice note is just a message that has not been read out yet.
   if (await maybeTranscribe(bot, msg)) return;
 
