@@ -1514,9 +1514,29 @@ async function handleIncomingMessage(bot, msg) {
 // dispatches onText handlers from processUpdate: it emits 'message' first and only then
 // walks the regexp callbacks, so a listener that returns early guards nothing — every
 // slash command still runs, and answers in whichever chat the handler picks.
+// Declared here rather than beside the group bot below, because the filter just under
+// this needs to know whether a group bot is actually going to answer on this machine.
+const GROUP_BOT_TOKEN = process.env.GROUP_BOT_TOKEN;
+
+/**
+ * Hold the group token without listening on it.
+ *
+ * Telegram serves getUpdates to one consumer per token. A second machine that copies
+ * the settings file verbatim starts a second poll loop on the next restart, and the two
+ * fight until both get 409s — so the working bot on the first machine breaks, remotely,
+ * because somebody set up a laptop.
+ *
+ * But the token is still wanted there. scripts/move-to-telegram.js talks to the API over
+ * plain HTTPS and never polls, so it can push a session from this machine into a topic
+ * without anything here listening. This switch is that arrangement: the token is present
+ * and usable for sending, and nothing in this process claims the group.
+ */
+const GROUP_BOT_SEND_ONLY = /^(1|true|yes|on)$/i.test(process.env.GROUP_BOT_SEND_ONLY || '');
+const GROUP_BOT_ANSWERS = Boolean(GROUP_BOT_TOKEN) && !GROUP_BOT_SEND_ONLY;
+
 const mainProcessUpdate = bot.processUpdate.bind(bot);
 bot.processUpdate = (update) => {
-  if (process.env.GROUP_BOT_TOKEN) {
+  if (GROUP_BOT_ANSWERS) {
     const holder = update.message || update.edited_message || update.channel_post ||
       (update.callback_query && update.callback_query.message);
     const chat = holder && holder.chat;
@@ -1531,10 +1551,13 @@ bot.on('callback_query', (query) => handleCallbackQuery(bot, query));
 // ===== Optional second bot: one supergroup, one topic per session =====
 // Same process, same session machinery, second door. Without the token nothing below
 // runs, so a machine that has not opted in behaves exactly as it always did.
-const GROUP_BOT_TOKEN = process.env.GROUP_BOT_TOKEN;
 let groupBot = null;
 
-if (GROUP_BOT_TOKEN) {
+if (GROUP_BOT_TOKEN && GROUP_BOT_SEND_ONLY) {
+  console.log('📤 Group bot: send-only — token held for scripts, not polled here');
+}
+
+if (GROUP_BOT_ANSWERS) {
   const { wrapBot, chatKeyOf } = require('./lib/topic-bot');
 
   const raw = new TelegramBot(GROUP_BOT_TOKEN, {
