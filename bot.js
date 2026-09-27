@@ -167,6 +167,27 @@ function onEvent(event, handler) {
   bot.on(event, handler);
 }
 
+/**
+ * The bot a message actually arrived on.
+ *
+ * Handlers in this file are registered against both bots, but they closed over the
+ * private one — so a photo sent in a topic was answered by a bot that is not in
+ * that group, and, worse, downloaded with the wrong token.
+ *
+ * That second part is the whole bug. A file id belongs to the bot it was given to:
+ * handing one to another token gets a refusal rather than a file, which is why a
+ * picture in a topic came back as a download failure with nothing useful to say
+ * about it. Anything touching a file has to ask which bot it is holding.
+ */
+function botFor(msg) {
+  if (!groupBot) return bot;
+  const id = msg && msg.chat && msg.chat.id;
+  // A synthetic topic key, or any non-private chat: both belong to the group bot.
+  if (typeof id === 'string' && id.includes(':')) return groupBot;
+  if (msg && msg.chat && msg.chat.type && msg.chat.type !== 'private') return groupBot;
+  return bot;
+}
+
 // ===== Polling error recovery =====
 bot.on('polling_error', (err) => {
   const msg = err.message || '';
@@ -746,10 +767,14 @@ onEvent("photo", async (msg) => {
   const chatId = msg.chat.id;
   const userState = getUserState(chatId);
 
+  // The bot this arrived on, not whichever one this file happened to close over.
+  // A file id only works with the token it was issued to.
+  const api = botFor(msg);
+
   // Send status message immediately
   let statusMsg;
   try {
-    statusMsg = await bot.sendMessage(chatId, '📷 Downloading image...', { reply_to_message_id: msg.message_id });
+    statusMsg = await api.sendMessage(chatId, '📷 Downloading image...', { reply_to_message_id: msg.message_id });
   } catch (e) {
     return;
   }
@@ -769,10 +794,10 @@ onEvent("photo", async (msg) => {
     const localPath = path.join(imagesDir, `${Date.now()}_${fileId.substring(0, 20)}.jpg`);
 
     console.log(`📷 Downloading image to: ${localPath}`);
-    await bot.downloadFile(fileId, imagesDir);
+    await api.downloadFile(fileId, imagesDir);
 
     // Find the downloaded file (bot.downloadFile uses original filename)
-    const file = await bot.getFile(fileId);
+    const file = await api.getFile(fileId);
     const downloadedPath = path.join(imagesDir, path.basename(file.file_path));
 
     // Rename to our path
@@ -782,7 +807,7 @@ onEvent("photo", async (msg) => {
 
     // Verify file was downloaded
     if (!fs.existsSync(localPath)) {
-      await bot.editMessageText('❌ Failed to download image', { chat_id: chatId, message_id: statusMsg.message_id });
+      await api.editMessageText('❌ Failed to download image', { chat_id: chatId, message_id: statusMsg.message_id });
       return;
     }
 
@@ -793,12 +818,12 @@ onEvent("photo", async (msg) => {
       // Too small, probably an error
       const content = fs.readFileSync(localPath, 'utf-8').substring(0, 200);
       console.log(`📷 Image content: ${content}`);
-      await bot.editMessageText(`❌ Download failed: ${content.substring(0, 100)}`, { chat_id: chatId, message_id: statusMsg.message_id });
+      await api.editMessageText(`❌ Download failed: ${content.substring(0, 100)}`, { chat_id: chatId, message_id: statusMsg.message_id });
       return;
     }
 
     // Update status
-    await bot.editMessageText('🔄 Analyzing image with Claude...', { chat_id: chatId, message_id: statusMsg.message_id });
+    await api.editMessageText('🔄 Analyzing image with Claude...', { chat_id: chatId, message_id: statusMsg.message_id });
 
     // Build prompt - tell Claude to read and analyze the image file
     const caption = msg.caption || 'Please analyze this image';
@@ -817,11 +842,11 @@ onEvent("photo", async (msg) => {
 
     const onAnalyzed = async (error, stdout, stderr) => {
       // Delete status message
-      try { await bot.deleteMessage(chatId, statusMsg.message_id); } catch (e) {}
+      try { await api.deleteMessage(chatId, statusMsg.message_id); } catch (e) {}
 
       if (error) {
         const errMsg = stderr || error.message || 'Unknown error';
-        bot.sendMessage(chatId, `❌ Error: ${errMsg.substring(0, 500)}`);
+        api.sendMessage(chatId, `❌ Error: ${errMsg.substring(0, 500)}`);
         return;
       }
 
@@ -829,10 +854,10 @@ onEvent("photo", async (msg) => {
 
       // Send response
       if (output.length <= 4000) {
-        bot.sendMessage(chatId, output);
+        api.sendMessage(chatId, output);
       } else {
         const { sendLongMessage } = require('./lib/utils');
-        await sendLongMessage(bot, chatId, output);
+        await sendLongMessage(api, chatId, output);
       }
 
       // Clean up old images (keep last 20)
@@ -866,9 +891,9 @@ onEvent("photo", async (msg) => {
   } catch (e) {
     console.log(`📷 Error: ${e.message}`);
     try {
-      await bot.editMessageText(`❌ Failed: ${e.message}`, { chat_id: chatId, message_id: statusMsg.message_id });
+      await api.editMessageText(`❌ Failed: ${e.message}`, { chat_id: chatId, message_id: statusMsg.message_id });
     } catch (e2) {
-      bot.sendMessage(chatId, `❌ Failed: ${e.message}`);
+      api.sendMessage(chatId, `❌ Failed: ${e.message}`);
     }
   }
 });
