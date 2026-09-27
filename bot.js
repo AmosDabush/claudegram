@@ -498,93 +498,71 @@ function sendQuickSettings(bot, chatId, messageId = null) {
   const textStyleIcons = { off: '📝', concise: '⚡', detailed: '📚', code_only: '💻', no_emoji: '🚫' };
   const voiceStyleIcons = { off: '📝', normal: '🗣', casual: '💬', very_casual: '🎙', bro: '🤙' };
 
-  // One setting, two rows: what it is on top, what it can be underneath.
-  //
-  // It used to be one row — name and every choice sharing it. Telegram splits a row
-  // evenly between its buttons, so the name was competing with the choices for an
-  // equal slice, and the more choices a setting had the less of its own name it got
-  // to keep. Five buttons on a phone left every cell an ellipsis and nothing else:
-  // you could see which one was picked and not what it was or what the others were.
-  //
-  // A full-width name cannot be squeezed by anything, and the choices then split the
-  // row between four at worst instead of five. Costs a row per setting and buys a
-  // panel that can actually be read.
-  const setting = (label, current, options, press = 'noop') => [
-    // The name carries the choice's own words rather than the value stored behind
-    // it, so a panel never says "no_emoji" at somebody.
-    [{
-      text: `${label}: ${(options.find(o => o[0] === current) || [, current])[1]}`,
-      callback_data: press
-    }],
-    options.map(([value, shown, data]) => ({
-      text: value === current ? `● ${shown}` : shown,
-      callback_data: data
-    }))
-  ];
-
   const keyboard = [
-    ...setting(`${voiceIcons[voiceMode]} Voice`, voiceMode, [
-      ['off', 'off', 'qset:voice:off'],
-      ['on', 'on', 'qset:voice:on'],
-      ['auto', 'auto', 'qset:voice:auto']
-    ], 'cmd:voice'),
-
-    // Voice notes IN — the other direction from the row above, and the only setting
-    // here that depends on something outside npm, so it ships off and says why when
-    // switched on.
-    ...setting(`${sttMode === 'on' ? '🎧' : '🚫'} Rec→Text`, sttMode, [
-      ['off', 'off', 'qset:stt:off'],
-      ['on', 'on', 'qset:stt:on']
-    ]),
-
-    // The two style settings are the ones that were unreadable: four choices each,
-    // drawn as four bare ellipses. Words rather than icons on a four-wide row — an
-    // emoji is about as wide as three letters, and the letters are the part that
-    // says what the choice actually is. The icon still leads the name above.
-    ...setting(`${textStyleIcons[textStyle] || '📝'} Text style`, textStyle, [
-      ['off', 'normal', 'qset:txtstyle:off'],
-      ['concise', 'short', 'qset:txtstyle:concise'],
-      ['code_only', 'code', 'qset:txtstyle:code_only'],
-      ['no_emoji', 'no emoji', 'qset:txtstyle:no_emoji']
-    ], 'cmd:textstyle'),
-
-    ...setting(`${voiceStyleIcons[voiceStyle] || '📝'} Voice style`, voiceStyle, [
-      ['off', 'normal', 'qset:vocstyle:off'],
-      ['casual', 'casual', 'qset:vocstyle:casual'],
-      ['very_casual', 'loose', 'qset:vocstyle:very_casual'],
-      ['bro', 'bro', 'qset:vocstyle:bro']
-    ], 'cmd:voicestyle'),
-
-    ...setting(`${thoughtIcons[thoughtMode]} Thinking`, thoughtMode, [
-      ['off', 'off', 'qset:thought:off'],
-      ['on', 'on', 'qset:thought:on'],
-      ['auto', 'auto', 'qset:thought:auto']
-    ], 'cmd:thought'),
-
-    // How much of the answer you watch being written.
-    ...setting(`${streamIcons[streamMode] || '⌨️'} Stream`, streamMode, [
-      ['off', 'off', 'qset:stream:off'],
-      ['on', 'on', 'qset:stream:on'],
-      ['live', 'live', 'qset:stream:live']
-    ]),
-
-    ...setting(`${sessionIcons[sessionMode]} Session`, sessionMode, [
-      ['demand', 'demand', 'qset:session:demand'],
-      ['session', 'session', 'qset:session:session']
-    ], 'cmd:session'),
-
-    ...setting(`${permIcons[permMode]} Permissions`, permMode, [
-      ['default', 'ask', 'qset:perm:default'],
-      ['fast', 'fast', 'qset:perm:fast'],
-      ['plan', 'plan', 'qset:perm:plan'],
-      ['yolo', 'yolo', 'qset:perm:yolo']
-    ], 'cmd:mode'),
-
-    ...setting(`${interactiveIcons[interactive]} Interactive`, interactive, [
-      ['off', 'off', 'qset:interactive:off'],
-      ['on', 'on', 'qset:interactive:on']
-    ], 'cmd:interactive'),
-
+    // Voice row
+    [
+      { text: `Voice: ${voiceIcons[voiceMode]}`, callback_data: 'cmd:voice' },
+      { text: voiceMode === 'off' ? '● off' : 'off', callback_data: 'qset:voice:off' },
+      { text: voiceMode === 'on' ? '● on' : 'on', callback_data: 'qset:voice:on' },
+      { text: voiceMode === 'auto' ? '● auto' : 'auto', callback_data: 'qset:voice:auto' }
+    ],
+    // Voice notes IN — the other direction from the row above, and the only row here
+    // that depends on something outside npm, so it ships off and says why when switched on.
+    [
+      { text: `Rec→Text: ${sttMode === 'on' ? '🎧' : '🚫'}`, callback_data: 'noop' },
+      { text: sttMode === 'off' ? '● off' : 'off', callback_data: 'qset:stt:off' },
+      { text: sttMode === 'on' ? '● on' : 'on', callback_data: 'qset:stt:on' }
+    ],
+    // Text Style row (shown when voice is off/on)
+    [
+      { text: `TxtStyle: ${textStyleIcons[textStyle] || '📝'}`, callback_data: 'cmd:textstyle' },
+      { text: textStyle === 'off' ? '●' : '📝', callback_data: 'qset:txtstyle:off' },
+      { text: textStyle === 'concise' ? '●' : '⚡', callback_data: 'qset:txtstyle:concise' },
+      { text: textStyle === 'code_only' ? '●' : '💻', callback_data: 'qset:txtstyle:code_only' },
+      { text: textStyle === 'no_emoji' ? '●' : '🚫', callback_data: 'qset:txtstyle:no_emoji' }
+    ],
+    // Voice Style row (shown when voice is auto)
+    [
+      { text: `VoiceStyle: ${voiceStyleIcons[voiceStyle] || '📝'}`, callback_data: 'cmd:voicestyle' },
+      { text: voiceStyle === 'off' ? '●' : '📝', callback_data: 'qset:vocstyle:off' },
+      { text: voiceStyle === 'casual' ? '●' : '💬', callback_data: 'qset:vocstyle:casual' },
+      { text: voiceStyle === 'very_casual' ? '●' : '🎙', callback_data: 'qset:vocstyle:very_casual' },
+      { text: voiceStyle === 'bro' ? '●' : '🤙', callback_data: 'qset:vocstyle:bro' }
+    ],
+    // Thought row
+    [
+      { text: `Thought: ${thoughtIcons[thoughtMode]}`, callback_data: 'cmd:thought' },
+      { text: thoughtMode === 'off' ? '● off' : 'off', callback_data: 'qset:thought:off' },
+      { text: thoughtMode === 'on' ? '● on' : 'on', callback_data: 'qset:thought:on' },
+      { text: thoughtMode === 'auto' ? '● auto' : 'auto', callback_data: 'qset:thought:auto' }
+    ],
+    // Stream row - type the answer out as it is written
+    [
+      { text: `Stream: ${streamIcons[streamMode] || '⌨️'}`, callback_data: `qset:stream:${streamMode}` },
+      { text: streamMode === 'off' ? '● off' : 'off', callback_data: 'qset:stream:off' },
+      { text: streamMode === 'on' ? '● on' : 'on', callback_data: 'qset:stream:on' },
+      { text: streamMode === 'live' ? '● live' : 'live', callback_data: 'qset:stream:live' }
+    ],
+    // Session row
+    [
+      { text: `Session: ${sessionIcons[sessionMode]}`, callback_data: 'cmd:session' },
+      { text: sessionMode === 'demand' ? '● demand' : 'demand', callback_data: 'qset:session:demand' },
+      { text: sessionMode === 'session' ? '● session' : 'session', callback_data: 'qset:session:session' }
+    ],
+    // Permission row
+    [
+      { text: `Mode: ${permIcons[permMode]}`, callback_data: 'cmd:mode' },
+      { text: permMode === 'default' ? '●' : '🔒', callback_data: 'qset:perm:default' },
+      { text: permMode === 'fast' ? '●' : '⚡', callback_data: 'qset:perm:fast' },
+      { text: permMode === 'plan' ? '●' : '📋', callback_data: 'qset:perm:plan' },
+      { text: permMode === 'yolo' ? '●' : '🔥', callback_data: 'qset:perm:yolo' }
+    ],
+    // Interactive row
+    [
+      { text: `Interactive: ${interactiveIcons[interactive]}`, callback_data: 'cmd:interactive' },
+      { text: interactive === 'off' ? '● off' : 'off', callback_data: 'qset:interactive:off' },
+      { text: interactive === 'on' ? '● on' : 'on', callback_data: 'qset:interactive:on' }
+    ],
     // Back button
     [{ text: '⬅️ Back to Menu', callback_data: 'all:back' }]
   ];
