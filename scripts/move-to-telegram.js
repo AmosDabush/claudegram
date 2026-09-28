@@ -37,6 +37,7 @@ const BOT_DIR = path.join(__dirname, '..');
 const platform = require(path.join(BOT_DIR, 'lib', 'platform'));
 const unifiedSessions = require(path.join(BOT_DIR, 'lib', 'unified-sessions'));
 const topics = require(path.join(BOT_DIR, 'lib', 'topics'));
+const hosts = require(path.join(BOT_DIR, 'lib', 'hosts'));
 
 // ── .env, read the same way bot.js reads it ──────────────────────────────────
 const envPath = path.join(BOT_DIR, '.env');
@@ -95,9 +96,16 @@ if (has('list-topics')) {
     console.log('Topics this bot has handled:\n');
     for (const key of keys.sort()) {
       const [chat, thread] = key.split(':');
-      console.log(`  --chat ${chat} --thread ${thread}   ${named[key] || '(name not seen yet)'}`);
+      // Which machine runs it, when that is not this one. Two machines and one of
+      // them polling the group means a list without this cannot be read: every
+      // line looks the same and half of them are somebody else's work.
+      const where = hosts.markerFor(key);
+      console.log(`  --chat ${chat} --thread ${thread}   ${named[key] || '(name not seen yet)'}${where}`);
     }
     console.log('\nNames fill in as messages arrive from each topic.');
+    if (hosts.hasChoice()) {
+      console.log(`Unmarked topics run on this machine (${hosts.THIS_HOST}).`);
+    }
   }
   process.exit(0);
 }
