@@ -243,6 +243,7 @@ const ALL_COMMANDS = [
   { command: 'resume_pinned', description: '📌 Resume pinned session' },
   { command: 'forceresume', description: '🔓 Take over a session open elsewhere' },
   { command: 'move_to_mac', description: '🖥 Move to Mac terminal' },
+  { command: 'resume_here', description: '▶️ Bring this topic\'s newest session back' },
   { command: 'bookmark', description: '🔖 Bookmark (save)' },
   { command: 'bookmarks', description: '🔖 Bookmarks (show all)' },
   { command: 'pin', description: '📌 Pin current session' },
@@ -761,141 +762,216 @@ onCommand(/\/restart(?:\s+(clean))?/, async (msg, match) => {
 });
 
 // ===== Photo handler - download and send to Claude =====
+
+/** One picture on disk, under a name of ours. Throws if nothing usable arrived. */
+async function savePhoto(api, msg) {
+  // Get highest resolution photo
+  const photo = msg.photo[msg.photo.length - 1];
+  const fileId = photo.file_id;
+
+  // Create images directory
+  const imagesDir = path.join(__dirname, 'data', 'images');
+  if (!fs.existsSync(imagesDir)) {
+    fs.mkdirSync(imagesDir, { recursive: true });
+  }
+
+  // Use bot's built-in downloadFile method (handles auth automatically)
+  const localPath = path.join(imagesDir, `${Date.now()}_${fileId.substring(0, 20)}.jpg`);
+
+  console.log(`📷 Downloading image to: ${localPath}`);
+  await api.downloadFile(fileId, imagesDir);
+
+  // Find the downloaded file (bot.downloadFile uses original filename)
+  const file = await api.getFile(fileId);
+  const downloadedPath = path.join(imagesDir, path.basename(file.file_path));
+
+  // Rename to our path
+  if (fs.existsSync(downloadedPath) && downloadedPath !== localPath) {
+    fs.renameSync(downloadedPath, localPath);
+  }
+
+  if (!fs.existsSync(localPath)) throw new Error('Failed to download image');
+
+  const stats = fs.statSync(localPath);
+  console.log(`📷 Image saved: ${stats.size} bytes`);
+
+  if (stats.size < 1000) {
+    // Too small, probably an error
+    const content = fs.readFileSync(localPath, 'utf-8').substring(0, 200);
+    console.log(`📷 Image content: ${content}`);
+    throw new Error(`Download failed: ${content.substring(0, 100)}`);
+  }
+
+  return localPath;
+}
+
+/** Keep the most recent images and drop the rest. */
+function pruneImages(keep = 40) {
+  try {
+    const imagesDir = path.join(__dirname, 'data', 'images');
+    const files = fs.readdirSync(imagesDir)
+      .map(f => ({ name: f, time: fs.statSync(path.join(imagesDir, f)).mtime.getTime() }))
+      .sort((a, b) => b.time - a.time);
+
+    if (files.length > keep) {
+      for (const f of files.slice(keep)) {
+        fs.unlinkSync(path.join(imagesDir, f.name));
+      }
+    }
+  } catch (e) {}
+}
+
+/**
+ * What the session is told when pictures arrive.
+ *
+ * Several of them are one situation seen from several angles — a list, a chat and
+ * the same chat after a restart — and answering each one on its own gets the
+ * situation wrong in a way that answering all of them together does not.
+ */
+function photoPrompt(paths, caption) {
+  const list = paths.map(p => `[תמונה מצורפת: ${p}]`).join('\n');
+  const many = paths.length > 1;
+
+  if (caption) {
+    return `${caption}\n\n${list}\n` + (many
+      ? `Open them all with Read. Together they are context for the message above — ` +
+        `answer the message. Don't describe the pictures back.`
+      : `Open it with Read. It is context for the message above — answer the message. ` +
+        `Don't describe the picture back.`);
+  }
+
+  return `${list}\n` + (many
+    ? `Open all ${paths.length} with Read. They are one situation shown in ${paths.length} ` +
+      `pictures, not ${paths.length} separate questions — read them together and respond in ` +
+      `the context of what we are working on. Don't narrate what is in them — say what they ` +
+      `mean for the task, or ask what I want from them.`
+    : `Open it with Read and respond to it in the context of what we are working on. ` +
+      `Don't narrate what is in it — say what it means for the task, or ask what I want from it.`);
+}
+
+/**
+ * An album is not one message.
+ *
+ * Telegram sends every picture in it as its own update, tied together only by
+ * media_group_id, and there is no update that says which one was the last — so
+ * unlike "is this recording finished", there is no fact here to ask the API for.
+ * The pictures are collected instead, and handed over once a short quiet gap says
+ * the group has stopped arriving. Sending them one at a time was the whole reason
+ * a situation had to be explained in a single screenshot.
+ */
+const albums = new Map();
+const ALBUM_QUIET_MS = 1500;
+
+async function deliverPhotos(album) {
+  const { api, first, status } = album;
+  const chatId = first.chat.id;
+
+  // Every failed download already said so on its own. Nothing arrived at all
+  // means there is nothing to hand over.
+  if (!album.shots.length) return;
+
+  // A picture is a message, and it goes through the same front door as one.
+  //
+  // This used to spawn its own `claude -p` with "please read and analyze it".
+  // That process had no history, no session and no future: it looked at the
+  // file, wrote down what was in it, printed that, and died. Which is exactly
+  // what it felt like from the phone — send a picture, get a caption back,
+  // every single time, no matter what the session was in the middle of.
+  //
+  // The image never reached the session. Now it does: same route a voice note
+  // takes once it has been transcribed, so the session that is already open
+  // answers it, with everything it already knows still in front of it.
+  if (status) {
+    try { await api.deleteMessage(chatId, status.message_id); } catch (e) {}
+  }
+
+  // The updates of one album do not have to arrive in the order they were
+  // picked, and the order they were picked is the order they explain things in.
+  const paths = album.shots.sort((a, b) => a.id - b.id).map(s => s.path);
+
+  // photo has to be cleared, or the front door routes it straight back here.
+  const asText = {
+    ...first,
+    text: photoPrompt(paths, album.caption),
+    caption: undefined,
+    photo: undefined,
+    media_group_id: undefined
+  };
+  await handleIncomingMessage(api, asText);
+
+  pruneImages();
+}
+
 onEvent("photo", async (msg) => {
   if (!isAuthorized(msg)) return;
 
   const chatId = msg.chat.id;
-  const userState = getUserState(chatId);
 
   // The bot this arrived on, not whichever one this file happened to close over.
   // A file id only works with the token it was issued to.
   const api = botFor(msg);
 
-  // Send status message immediately
-  let statusMsg;
+  const key = msg.media_group_id ? `${chatId}:${msg.media_group_id}` : null;
+
+  // The entry has to exist before the first await, or two pictures of the same
+  // album arriving in one tick each open an album of their own.
+  let album = key ? albums.get(key) : null;
+  const opening = !album;
+  if (opening) {
+    album = { api, first: msg, status: null, caption: '', shots: [], timer: null };
+    if (key) albums.set(key, album);
+  }
+
+  // Telegram hangs the caption on one picture of the album, not on all of them.
+  const caption = (msg.caption || '').trim();
+  if (caption && !album.caption) album.caption = caption;
+
+  if (opening) {
+    try {
+      album.status = await api.sendMessage(chatId, '📷 Downloading image...', { reply_to_message_id: msg.message_id });
+    } catch (e) {
+      if (key) albums.delete(key);
+      return;
+    }
+  }
+
   try {
-    statusMsg = await api.sendMessage(chatId, '📷 Downloading image...', { reply_to_message_id: msg.message_id });
+    const localPath = await savePhoto(api, msg);
+    album.shots.push({ id: msg.message_id, path: localPath });
+
+    if (key && album.status && album.shots.length > 1) {
+      api.editMessageText(`📷 Downloading images... (${album.shots.length})`, {
+        chat_id: chatId,
+        message_id: album.status.message_id
+      }).catch(() => {});
+    }
   } catch (e) {
+    // One picture failing is not the album failing. Say so and let the rest of
+    // the group go through.
+    console.log(`📷 Error: ${e.message}`);
+    if (album.status) {
+      try {
+        await api.editMessageText(`❌ Failed: ${e.message}`, { chat_id: chatId, message_id: album.status.message_id });
+      } catch (e2) {
+        api.sendMessage(chatId, `❌ Failed: ${e.message}`);
+      }
+      // That message is now the error, so nothing may delete it later.
+      if (!album.shots.length) album.status = null;
+    }
+  }
+
+  if (!key) {
+    await deliverPhotos(album);
     return;
   }
 
-  try {
-    // Get highest resolution photo
-    const photo = msg.photo[msg.photo.length - 1];
-    const fileId = photo.file_id;
-
-    // Create images directory
-    const imagesDir = path.join(__dirname, 'data', 'images');
-    if (!fs.existsSync(imagesDir)) {
-      fs.mkdirSync(imagesDir, { recursive: true });
-    }
-
-    // Use bot's built-in downloadFile method (handles auth automatically)
-    const localPath = path.join(imagesDir, `${Date.now()}_${fileId.substring(0, 20)}.jpg`);
-
-    console.log(`📷 Downloading image to: ${localPath}`);
-    await api.downloadFile(fileId, imagesDir);
-
-    // Find the downloaded file (bot.downloadFile uses original filename)
-    const file = await api.getFile(fileId);
-    const downloadedPath = path.join(imagesDir, path.basename(file.file_path));
-
-    // Rename to our path
-    if (fs.existsSync(downloadedPath) && downloadedPath !== localPath) {
-      fs.renameSync(downloadedPath, localPath);
-    }
-
-    // Verify file was downloaded
-    if (!fs.existsSync(localPath)) {
-      await api.editMessageText('❌ Failed to download image', { chat_id: chatId, message_id: statusMsg.message_id });
-      return;
-    }
-
-    const stats = fs.statSync(localPath);
-    console.log(`📷 Image saved: ${stats.size} bytes`);
-
-    if (stats.size < 1000) {
-      // Too small, probably an error
-      const content = fs.readFileSync(localPath, 'utf-8').substring(0, 200);
-      console.log(`📷 Image content: ${content}`);
-      await api.editMessageText(`❌ Download failed: ${content.substring(0, 100)}`, { chat_id: chatId, message_id: statusMsg.message_id });
-      return;
-    }
-
-    // Update status
-    await api.editMessageText('🔄 Analyzing image with Claude...', { chat_id: chatId, message_id: statusMsg.message_id });
-
-    // Build prompt - tell Claude to read and analyze the image file
-    const caption = msg.caption || 'Please analyze this image';
-    const prompt = `${caption}\n\nThe image is at: ${localPath}\nPlease read and analyze it.`;
-
-    // Use Claude in print mode with the prompt
-    const { exec, execFile } = require('child_process');
-    const { getModeFlag, getModeArgs } = require('./lib/utils');
-
-    const opts = {
-      cwd: userState.currentPath,
-      env: { ...process.env, PATH: `${platform.claudeBinDir()}${path.delimiter}${process.env.PATH}` },
-      maxBuffer: 10 * 1024 * 1024,
-      timeout: 3 * 60 * 1000  // 3 min timeout for image analysis
-    };
-
-    const onAnalyzed = async (error, stdout, stderr) => {
-      // Delete status message
-      try { await api.deleteMessage(chatId, statusMsg.message_id); } catch (e) {}
-
-      if (error) {
-        const errMsg = stderr || error.message || 'Unknown error';
-        api.sendMessage(chatId, `❌ Error: ${errMsg.substring(0, 500)}`);
-        return;
-      }
-
-      const output = stdout || 'Done (no output)';
-
-      // Send response
-      if (output.length <= 4000) {
-        api.sendMessage(chatId, output);
-      } else {
-        const { sendLongMessage } = require('./lib/utils');
-        await sendLongMessage(api, chatId, output);
-      }
-
-      // Clean up old images (keep last 20)
-      try {
-        const files = fs.readdirSync(imagesDir)
-          .map(f => ({ name: f, time: fs.statSync(path.join(imagesDir, f)).mtime.getTime() }))
-          .sort((a, b) => b.time - a.time);
-
-        if (files.length > 20) {
-          for (const f of files.slice(20)) {
-            fs.unlinkSync(path.join(imagesDir, f.name));
-          }
-        }
-      } catch (e) {}
-    };
-
-    // Same split as the other claude call sites: macOS keeps its shell string,
-    // Windows spawns by argv. The prompt here embeds a filesystem path, which
-    // on Windows contains backslashes that a shell would eat.
-    if (platform.IS_WIN) {
-      execFile(platform.claudeBin(),
-        ['-p', prompt, ...getModeArgs(userState.currentMode)],
-        { ...opts, stdio: ['ignore', 'pipe', 'pipe'], ...platform.spawnOpts() }, onAnalyzed);
-    } else {
-      const escapedPrompt = prompt.replace(/'/g, "'\\''");
-      const modeFlag = getModeFlag(userState.currentMode);
-      const cmd = `claude -p '${escapedPrompt}' ${modeFlag} < /dev/null`;
-      console.log(`📷 Running: ${cmd.substring(0, 100)}...`);
-      exec(cmd, opts, onAnalyzed);
-    }
-  } catch (e) {
-    console.log(`📷 Error: ${e.message}`);
-    try {
-      await api.editMessageText(`❌ Failed: ${e.message}`, { chat_id: chatId, message_id: statusMsg.message_id });
-    } catch (e2) {
-      api.sendMessage(chatId, `❌ Failed: ${e.message}`);
-    }
-  }
+  // Each picture pushes the handover further out, so the gap is measured from
+  // the last one to arrive rather than the first.
+  clearTimeout(album.timer);
+  album.timer = setTimeout(() => {
+    albums.delete(key);
+    deliverPhotos(album).catch(e => console.log(`📷 Error: ${e.message}`));
+  }, ALBUM_QUIET_MS);
 });
 
 // ===== Log commands =====
@@ -1559,6 +1635,7 @@ if (GROUP_BOT_TOKEN && GROUP_BOT_SEND_ONLY) {
 
 if (GROUP_BOT_ANSWERS) {
   const { wrapBot, chatKeyOf } = require('./lib/topic-bot');
+  const hosts = require('./lib/hosts');
 
   const raw = new TelegramBot(GROUP_BOT_TOKEN, {
     polling: QA_MODE ? false : { autoStart: true, params: { timeout: 30 } }
@@ -1597,9 +1674,27 @@ if (GROUP_BOT_ANSWERS) {
     .then(me => { selfName = (me.username || '').toLowerCase(); })
     .catch(err => console.log('⚠️ Could not read group bot username:', err.message));
 
+  // Which topics are this machine's to answer.
+  //
+  // Two machines each poll their own group bot, both sitting in the same group, so both
+  // see every message in it. Without this gate they would both answer every topic. One
+  // bound to the other machine is that machine's work, and is dropped here before any
+  // handler runs — the same shape as the @botname check below, which already drops what
+  // was addressed to somebody else.
+  const ownsTopic = (m) => !m || !m.chat || hosts.answersHere(chatKeyOf(m));
+
+  // Left unset on a second machine, every unbound topic is claimed by both and answered
+  // twice. Silence would make that look like a bug in the bot rather than a missing line
+  // in .env, so say it at startup, where it is still cheap to fix.
+  if (hosts.hasChoice() && !(process.env.GROUP_FALLBACK_HOST || '').trim()) {
+    console.log(`⚠️ GROUP_FALLBACK_HOST is not set — "${hosts.THIS_HOST}" will answer every ` +
+      'topic nobody bound. With another machine in this group, set it to the same name on both.');
+  }
+
   const passUpdate = raw.processUpdate.bind(raw);
   raw.processUpdate = (update) => {
     const m = update.message || update.edited_message;
+    if (!ownsTopic(m || (update.callback_query && update.callback_query.message))) return;
     const addressed = m && typeof m.text === 'string' && /^\/[A-Za-z0-9_]+@([A-Za-z0-9_]+)/.exec(m.text);
     if (addressed) {
       if (selfName && addressed[1].toLowerCase() !== selfName) return;
