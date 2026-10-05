@@ -55,6 +55,37 @@ ok('a binding survives being written and read', fs.existsSync(path.join(DATA, 't
 hosts.unbind(KEY);
 ok('unbinding forgets it', hosts.hostFor(KEY) === null);
 
+// Who answers in the group. Two machines both see every message, so exactly one of
+// them may pick up a topic nobody bound — otherwise every unbound topic is answered
+// twice, which is the failure the whole binding exists to prevent.
+delete process.env.GROUP_FALLBACK_HOST;
+ok('with no fallback set, unbound topics are answered here', hosts.answersHere(KEY) === true);
+
+process.env.GROUP_FALLBACK_HOST = 'windows';
+ok('the fallback machine answers unbound topics', hosts.answersHere(KEY) === true);
+
+hosts.bind(KEY, 'mac');
+ok('a topic bound elsewhere is not answered here', hosts.answersHere(KEY) === false);
+hosts.bind(KEY, 'windows');
+ok('a topic bound here is answered here', hosts.answersHere(KEY) === true);
+
+// The same bindings and the same fallback, read from the other machine: every verdict
+// above has to come out the other way round, or both machines answer the same topic.
+delete require.cache[require.resolve('../lib/hosts')];
+process.env.HOST_NAME = 'mac';
+process.env.REMOTE_HOSTS = 'windows=amos@windows-box';
+const other = require('../lib/hosts');
+ok('the non-fallback machine leaves unbound topics alone', other.answersHere('-100123:77') === false);
+ok('it does not answer the other machine\'s topic', other.answersHere(KEY) === false);
+other.bind(KEY, 'mac');
+ok('it answers one bound to it', other.answersHere(KEY) === true);
+other.unbind(KEY);
+
+delete require.cache[require.resolve('../lib/hosts')];
+delete process.env.GROUP_FALLBACK_HOST;
+process.env.HOST_NAME = 'windows';
+process.env.REMOTE_HOSTS = 'mac=amos@studio.local';
+
 // A remote that calls itself what this machine is called would make "there" and
 // "here" the same instruction.
 delete require.cache[require.resolve('../lib/hosts')];
