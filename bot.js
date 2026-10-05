@@ -603,9 +603,17 @@ function sendAllMenu(bot, chatId, messageId = null) {
     [{ text: '📂 Navigation', callback_data: 'all:nav' }, { text: '📋 Quick Commands', callback_data: 'all:files' }],
     [{ text: '🌿 Git', callback_data: 'all:git' }, { text: '🔀 Parallel', callback_data: 'all:parallel' }],
     [{ text: '🎙 Voice', callback_data: 'all:voice' }, { text: '📜 Logs', callback_data: 'all:logs' }],
-    [{ text: '☕ GaggiMate', callback_data: 'gag:home' }],
     [{ text: '🛑 Cancel Request', callback_data: 'cmd:cancel' }]
   ];
+
+  // Espresso machine control, for the one person in the room who has one. Two gates, and
+  // they answer different questions: AVAILABLE is "is there a machine on this network"
+  // (GAGGIMATE_HOST), and the setting is "do I want to look at it right now". Same
+  // reasoning as the Remote Ses row above — a button that cannot work should not be
+  // drawn, because a drawn button that does nothing reads as a broken bot.
+  if (gaggimateCommands.AVAILABLE && (userState.gaggimate || 'on') !== 'off') {
+    keyboard.splice(keyboard.length - 1, 0, [{ text: '☕ GaggiMate', callback_data: 'gag:home' }]);
+  }
 
   const pipe = attachCommands.getMode() === 'attach' ? '🔗 Remote Ses' : '📚 Resume Sessions';
   const text = `🤖 *Claude Code Bot*\n\n` +

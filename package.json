@@ -8,7 +8,7 @@
     "start": "./start.sh",
     "sessions": "node scripts/sessions-cli.js",
     "doctor": "node scripts/doctor.js",
-    "test": "node scripts/qa-paths.js && node scripts/qa-hosts.js && node scripts/parity-check.js"
+    "test": "node scripts/qa-paths.js && node scripts/qa-hosts.js && node scripts/qa-gaggimate.js && node scripts/parity-check.js"
   },
   "keywords": ["claude", "telegram", "bot", "ai", "cli", "remote"],
   "author": "",
