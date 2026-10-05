@@ -14,7 +14,7 @@ const path = require('path');
 // real bindings. lib/config reads this before anything else does.
 process.env.CLAUDEGRAM_QA = '1';
 process.env.HOST_NAME = 'windows';
-process.env.REMOTE_HOSTS = 'mac=amos@studio.local';
+process.env.REMOTE_HOSTS = 'mac=you@studio.local';
 
 const DATA = path.join(__dirname, '..', 'data-qa');
 
@@ -29,7 +29,7 @@ const ok = (name, cond, detail = '') => {
 console.log('\nhosts\n');
 
 ok('this machine is named from HOST_NAME', hosts.THIS_HOST === 'windows', hosts.THIS_HOST);
-ok('a remote is read out of REMOTE_HOSTS', hosts.sshTargetOf('mac') === 'amos@studio.local');
+ok('a remote is read out of REMOTE_HOSTS', hosts.sshTargetOf('mac') === 'you@studio.local');
 ok('an unknown machine has no route', hosts.sshTargetOf('nowhere') === null);
 ok('both machines are offered', hosts.list().map(h => h.name).join(',') === 'windows,mac');
 ok('one of them is this one', hosts.list().filter(h => h.local).length === 1);
@@ -73,7 +73,7 @@ ok('a topic bound here is answered here', hosts.answersHere(KEY) === true);
 // above has to come out the other way round, or both machines answer the same topic.
 delete require.cache[require.resolve('../lib/hosts')];
 process.env.HOST_NAME = 'mac';
-process.env.REMOTE_HOSTS = 'windows=amos@windows-box';
+process.env.REMOTE_HOSTS = 'windows=you@windows-box';
 const other = require('../lib/hosts');
 ok('the non-fallback machine leaves unbound topics alone', other.answersHere('-100123:77') === false);
 ok('it does not answer the other machine\'s topic', other.answersHere(KEY) === false);
@@ -84,15 +84,15 @@ other.unbind(KEY);
 delete require.cache[require.resolve('../lib/hosts')];
 delete process.env.GROUP_FALLBACK_HOST;
 process.env.HOST_NAME = 'windows';
-process.env.REMOTE_HOSTS = 'mac=amos@studio.local';
+process.env.REMOTE_HOSTS = 'mac=you@studio.local';
 
 // A remote that calls itself what this machine is called would make "there" and
 // "here" the same instruction.
 delete require.cache[require.resolve('../lib/hosts')];
-process.env.REMOTE_HOSTS = 'windows=amos@somewhere,mac=amos@studio.local';
+process.env.REMOTE_HOSTS = 'windows=you@somewhere,mac=you@studio.local';
 const again = require('../lib/hosts');
 ok('a remote cannot take this machine\'s name', again.sshTargetOf('windows') === null);
-ok('the real remote still resolves', again.sshTargetOf('mac') === 'amos@studio.local');
+ok('the real remote still resolves', again.sshTargetOf('mac') === 'you@studio.local');
 
 // One machine is not a choice, and nobody should be asked to make it.
 delete require.cache[require.resolve('../lib/hosts')];

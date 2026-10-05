@@ -10,7 +10,7 @@
  * memory of the conversation it was in the middle of.
  *
  * The names below are the ones that actually broke it. Claude flattens '.', '_' and ':'
- * into '-' along with the separators, so '-1004306041139_178' — the shape of every topic
+ * into '-' along with the separators, so '-1001234567890_178' — the shape of every topic
  * workspace — encodes to something no amount of re-joining with dashes spells back.
  *
  *   node scripts/qa-paths.js
@@ -37,7 +37,7 @@ const ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'claudegram-qa-paths-'));
 
 // [ folder name, what makes it worth testing ]
 const NAMES = [
-  ['-1004306041139_178', 'a topic workspace: leading dash and an underscore'],
+  ['-1001234567890_178', 'a topic workspace: leading dash and an underscore'],
   ['claudegram-chats', 'a plain dash, which is also the separator'],
   ['.claude', 'a hidden folder, whose dot encodes like a separator'],
   ['gaggimate-data', 'an ordinary project'],

@@ -54,6 +54,111 @@ say anything in the group, and it reads the id from the update it receives.
 
 ---
 
+## 🔑 How many bots, and how many tokens
+
+This is the part that catches people, so it is worth being exact about. The answer depends
+only on how many **machines** you run the bot on.
+
+**One bot is one token, and one token can be polled by exactly one process.** Telegram
+serves `getUpdates` to a single consumer per token. Point two processes at the same token
+and they take turns stealing each other's updates until both are getting HTTP 409s — and
+neither says why. Every rule below follows from that one fact.
+
+### One machine
+
+**Two bots, two tokens.**
+
+| Bot | Variable | What it is for |
+|---|---|---|
+| Direct-chat bot | `BOT_TOKEN` | The private chat between you and the machine |
+| Group bot | `GROUP_BOT_TOKEN` | The supergroup, where each topic is its own session |
+
+They cannot be the same bot. One token cannot poll a direct chat and a group at once.
+
+If you only want the private chat, make one bot and leave `GROUP_BOT_TOKEN` empty. You
+lose topics — meaning one conversation at a time instead of several — and nothing else.
+
+### Two machines
+
+Two topologies work. Pick one before you start; converting later means re-pointing
+whichever tokens you got wrong.
+
+#### A — a group per machine (four tokens)
+
+Each machine gets its own pair and its own supergroup. Name the groups so you can tell
+them apart on the phone: `Claude · desktop`, `Claude · laptop`.
+
+| | Machine 1 | Machine 2 |
+|---|---|---|
+| `BOT_TOKEN` | bot 1 | bot 3 |
+| `GROUP_BOT_TOKEN` | bot 2 | bot 4 |
+| `GROUP_CHAT_ID` | group A | group B |
+| `GROUP_BOT_SEND_ONLY` | empty | empty |
+
+No token is shared, so nothing can collide. You get two groups in your Telegram list and
+you choose a machine by choosing which group you open. This is the simpler one, and the
+right default if the two machines do different work.
+
+#### B — one shared group (three tokens)
+
+Both machines sit in the same supergroup, and each topic is pinned to the machine that
+should answer it.
+
+| | Machine 1 | Machine 2 |
+|---|---|---|
+| `BOT_TOKEN` | bot 1 | bot 3 |
+| `GROUP_BOT_TOKEN` | bot 2 | **bot 2, the same token** |
+| `GROUP_CHAT_ID` | group A | group A |
+| `GROUP_BOT_SEND_ONLY` | empty | **`1`** |
+
+The group token is shared, so exactly one machine may poll it. The other sets
+`GROUP_BOT_SEND_ONLY=1`: it holds the token, can still push a session into a topic — that
+goes over plain HTTPS and never polls — but never listens. Leave it unset on both and they
+fight until neither works.
+
+One group, one list of topics, and a topic can be moved between machines. The cost is that
+the rules below have to be right on both.
+
+### Telling the machines apart
+
+Three settings, and they only matter once there are two machines.
+
+```ini
+HOST_NAME=desktop                          # what THIS machine is called
+REMOTE_HOSTS=laptop=you@laptop.local       # the others, as name=ssh-destination
+GROUP_FALLBACK_HOST=desktop                # who answers a topic nobody pinned
+```
+
+`HOST_NAME` is a label on a button. Make it readable — nobody picks a machine off
+`DESKTOP-4F7K2Q1`.
+
+`REMOTE_HOSTS` is how a session gets moved to the other machine, which is why it is an ssh
+destination: the thing being asked for is "run this over there". Make sure key-based ssh to
+that destination already works before you put it here.
+
+**`GROUP_FALLBACK_HOST` must read the same on every machine.** In topology B, a topic that
+has never been pinned is claimed by whichever machine this names. If it is empty, each
+machine names itself, both claim it, and every message in it is answered twice. This is the
+one setting whose breakage looks like a bug in the software rather than a line missing from
+a config file.
+
+In topology A, nothing is shared, so the fallback never arbitrates anything — but setting
+it costs nothing and keeps the two files comparable.
+
+### Check it
+
+```bash
+node scripts/doctor.js
+```
+
+It reads your `.env`, asks Telegram about both bots, and checks the things that fail
+silently: whether a token is real, whether Group Privacy is still on, whether the bot is an
+admin with Manage Topics, whether the group is a forum at all, whether two machines are
+about to fight over a token. Every failure prints the fix underneath it. Tokens are masked,
+so the output is safe to paste into an issue.
+
+---
+
 ## 📋 Prerequisites
 
 Before running setup, make sure you have:
@@ -79,9 +184,26 @@ It can clone, install dependencies, run the wizard and start the bot. It cannot 
 four Telegram steps above — so say up front whether you want the second bot, and it can
 collect both tokens in one pass instead of sending you back to @BotFather twice.
 
-Afterwards, ask it to run `node scripts/qa.js`. That exercises the routing, the menus and
-every published command without sending a single Telegram message, so a broken install
-shows up immediately rather than the first time you reach for a menu on your phone.
+Tell it how many machines you are setting up. If the answer is two, say which topology
+you want from [How many bots](#-how-many-bots-and-how-many-tokens) — that decides how many
+times you visit @BotFather, and it is annoying to discover afterwards.
+
+Nothing here needs a path from you. The wizard finds the Claude executable where your OS
+actually put it, and asks where you want topic workspaces with a default in your home
+directory. If you keep your code somewhere specific, say so and Claude will set
+`CLAUDEGRAM_CHATS_DIR` to it.
+
+Afterwards, ask it to run two things:
+
+```bash
+node scripts/doctor.js    # is this install correct, and can it reach Telegram
+node scripts/qa.js        # do the routing, menus and commands work
+```
+
+`qa.js` exercises every published command without sending a single Telegram message, so a
+broken install shows up immediately rather than the first time you reach for a menu on
+your phone. `doctor.js` catches the configuration mistakes that are invisible until you
+try to use the thing.
 
 ---
 

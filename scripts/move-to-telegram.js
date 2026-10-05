@@ -17,8 +17,8 @@
  *
  * The counterpart of the Mac's scripts/move-to-telegram.sh, in node so one file serves
  * both platforms. The session folder is named after the working directory, and the two
- * platforms spell that differently — /Users/amos/git -> -Users-amos-git against
- * C:\Users\amos -> C--Users-amos — so the encoding is taken from lib/platform rather than
+ * platforms spell that differently — /Users/you/git -> -Users-you-git against
+ * C:\Users\you -> C--Users-you — so the encoding is taken from lib/platform rather than
  * assumed.
  *
  *   node scripts/move-to-telegram.js                     back to its topic, or a new one

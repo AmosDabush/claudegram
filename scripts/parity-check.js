@@ -54,11 +54,11 @@ if (process.platform === 'darwin') {
   ok('spawnOpts       == {} (no shell on darwin)',
      Object.keys(P.spawnOpts()).length === 0, JSON.stringify(P.spawnOpts()));
 
-  const sample = '/Users/amos/git/auto-avsr';
+  const sample = '/Users/you/git/auto-avsr';
   eq('encodeProjectPath == path.replace(/\\//g, "-")',
      P.encodeProjectPath(sample), sample.replace(/\//g, '-'));
 
-  const enc = '-Users-amos-git';
+  const enc = '-Users-you-git';
   const dr = P.decodeRoot(enc);
   ok('decodeRoot      == { "/", split("-") }',
      dr.root === '/' && dr.parts.join('-') === enc.replace(/^-/, ''), JSON.stringify(dr));
@@ -85,10 +85,10 @@ if (process.platform === 'darwin') {
   ok('spawnOpts       == {} (claudeBin is a real exe)',
      Object.keys(P.spawnOpts()).length === 0, JSON.stringify(P.spawnOpts()));
 
-  eq('encodeProjectPath("C:\\\\Users\\\\amos")', P.encodeProjectPath('C:\\Users\\amos'), 'C--Users-amos');
-  const dr = P.decodeRoot('C--Users-amos');
-  ok('decodeRoot("C--Users-amos") -> C:\\ + [Users, amos]',
-     dr.root === 'C:\\' && dr.parts.join(',') === 'Users,amos', JSON.stringify(dr));
+  eq('encodeProjectPath("C:\\\\Users\\\\you")', P.encodeProjectPath('C:\\Users\\you'), 'C--Users-you');
+  const dr = P.decodeRoot('C--Users-you');
+  ok('decodeRoot("C--Users-you") -> C:\\ + [Users, you]',
+     dr.root === 'C:\\' && dr.parts.join(',') === 'Users,you', JSON.stringify(dr));
 
   const bin = P.claudeBin();
   ok('claudeBin exists on disk', fs.existsSync(bin), bin);
