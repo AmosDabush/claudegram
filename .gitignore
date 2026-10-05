@@ -1,6 +1,15 @@
 # Environment and secrets
+#
+# Everything beginning with .env, not just .env itself. setup.js backs the old file up
+# as .env.backup.<timestamp> before overwriting it, and that name matched none of the
+# patterns here — so running setup twice and then `git add -A` would commit a file with
+# both bot tokens in it. The one file that must stay tracked is the example, which has
+# no values in it.
 .env
+.env.*
+*.env
 *.env.local
+!.env.example
 
 # Session data (contains user info)
 sessions.json
