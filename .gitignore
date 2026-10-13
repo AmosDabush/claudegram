@@ -58,3 +58,6 @@ __pycache__/
 
 # QA harness scratch state (scripts/qa.js)
 data-qa/
+
+# Downloaded binaries (cloudflared is 55MB and comes from a release URL)
+tools/
