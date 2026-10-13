@@ -228,6 +228,9 @@ const ALL_COMMANDS = [
   { command: 'menu', description: '📱 Main menu (all categories)' },
   { command: 'settings', description: '⚙️ Quick settings' },
   { command: 'set', description: '🗣 Change a setting in words ("/set קול אוטומטי")' },
+  // In the list because it is the switch for the microphone channel, and a switch you
+  // have to remember the name of and type out is not a switch.
+  { command: 'live', description: '🎙 Live audio from the phone, on or off' },
   { command: 'claude', description: '🤖 Claude session & settings' },
   { command: 'model', description: '🧠 Switch Claude model' },
   { command: 'sessions', description: '📚 Browse & resume sessions' },
