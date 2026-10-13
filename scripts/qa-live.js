@@ -182,6 +182,26 @@ async function main() {
     partials.length < 2 || Number(partials[partials.length - 1].split(':')[1]) >
                            Number(partials[0].split(':')[1]),
     partials.join(' | ').slice(0, 80));
+  // The one that mattered most and was invisible: reading the take back to transcribe
+  // it moved the file pointer the next chunk was written at, so audio landed on top of
+  // audio. Twenty-six seconds of speech came out as four words, which reads as a bad
+  // model rather than a broken file. Every earlier check here sent its audio in one go
+  // with no snapshots in between, so none of them could see it.
+  const finalTake = fs.readdirSync(dir)
+    .filter(f => f.endsWith('.wav') && !f.endsWith('.part.wav'))
+    .map(f => ({ f, t: fs.statSync(path.join(dir, f)).mtimeMs }))
+    .sort((a, b) => b.t - a.t)[0];
+  if (finalTake) {
+    const w = fs.readFileSync(path.join(dir, finalTake.f));
+    const expected = 6 * live.BYTES_PER_SECOND;
+    ok('snapshots do not eat the recording they are taken from',
+      w.length - 44 === expected && w.readUInt32LE(40) === expected,
+      `${w.length - 44} bytes kept of ${expected} sent, header says ${w.readUInt32LE(40)}`);
+    // Not merely the right length: the right samples. A pointer landing back at the
+    // start would give a file of exactly the right size full of the wrong audio.
+    ok('and the samples survive intact', w.subarray(44).equals(tone(6)));
+  }
+
   ok('no stubs left behind',
     fs.readdirSync(dir).filter(f => f.endsWith('.part.wav')).length === 0,
     fs.readdirSync(dir).join(', '));
