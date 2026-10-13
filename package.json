@@ -8,9 +8,17 @@
     "start": "./start.sh",
     "sessions": "node scripts/sessions-cli.js",
     "doctor": "node scripts/doctor.js",
-    "test": "node scripts/qa-paths.js && node scripts/qa-hosts.js && node scripts/qa-gaggimate.js && node scripts/parity-check.js"
+    "test": "node scripts/qa-paths.js && node scripts/qa-hosts.js && node scripts/qa-gaggimate.js && node scripts/qa-live.js && node scripts/parity-check.js",
+    "live": "node scripts/qa-live.js --serve"
   },
-  "keywords": ["claude", "telegram", "bot", "ai", "cli", "remote"],
+  "keywords": [
+    "claude",
+    "telegram",
+    "bot",
+    "ai",
+    "cli",
+    "remote"
+  ],
   "author": "",
   "license": "MIT",
   "dependencies": {
@@ -18,6 +26,7 @@
     "edge-tts": "^1.0.1",
     "node-edge-tts": "^1.2.8",
     "node-pty": "^1.1.0",
-    "node-telegram-bot-api": "^0.67.0"
+    "node-telegram-bot-api": "^0.67.0",
+    "ws": "^8.18.3"
   }
 }
