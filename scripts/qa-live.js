@@ -137,6 +137,58 @@ async function main() {
       `${written.length - 44} bytes on disk against ${audio.length} sent`);
   }
 
+  // ── words come back while the sentence is still going ──────────────────────
+  //
+  // The whole point of the channel, and it was broken from the moment it was written:
+  // the take was opened write-only, so every attempt to read it back for transcription
+  // answered EBADF. It failed every two seconds for a whole conversation, the field on
+  // the phone stayed empty, and the only evidence was a log line nobody was watching.
+  // Nothing here tests whisper — only that audio in flight can be read back and that
+  // what comes of it reaches the socket.
+  const heard = [];
+  const partialServer = live.start({
+    port: 0, token: TOKEN, dir, log: quiet,
+    partialMs: 150,
+    onPartial: (shot) => {
+      // Stands in for transcription. Proves the snapshot is a real, readable wav of
+      // what has arrived so far, which is the part that was broken.
+      const bytes = fs.statSync(shot.file).size;
+      const header = fs.readFileSync(shot.file).toString('ascii', 0, 4);
+      return `${header}:${bytes}`;
+    }
+  });
+  const partialPort = await partialServer.listening;
+
+  const talker = new WebSocket(`ws://127.0.0.1:${partialPort}/live?token=${TOKEN}`);
+  const partials = [];
+  talker.on('message', (m) => {
+    const o = JSON.parse(m.toString());
+    if (o.t === 'partial') partials.push(o.text);
+  });
+  await new Promise(r => talker.on('open', r));
+  talker.send(JSON.stringify({ t: 'start' }));
+  for (let i = 0; i < 6; i++) {
+    talker.send(tone(1));
+    await sleep(120);
+  }
+  await sleep(400);
+  talker.send(JSON.stringify({ t: 'end' }));
+  await sleep(200);
+
+  ok('partial text comes back mid-sentence', partials.length > 0, `${partials.length} partials`);
+  ok('the snapshot is a readable wav of what has arrived',
+    partials.every(p => p.startsWith('RIFF:')), partials.join(' | ').slice(0, 80));
+  ok('and it grows as more is said',
+    partials.length < 2 || Number(partials[partials.length - 1].split(':')[1]) >
+                           Number(partials[0].split(':')[1]),
+    partials.join(' | ').slice(0, 80));
+  ok('no stubs left behind',
+    fs.readdirSync(dir).filter(f => f.endsWith('.part.wav')).length === 0,
+    fs.readdirSync(dir).join(', '));
+
+  talker.close();
+  await partialServer.close();
+
   // ── the round trip is measurable from the phone's own clock ─────────────────
   const at = Date.now();
   client.send(JSON.stringify({ t: 'ping', at }));
@@ -148,6 +200,11 @@ async function main() {
   // The case that matters on a motorway: the connection goes, and whatever was said up
   // to that point has to survive. A file that only becomes valid when it is closed
   // properly is a file lost exactly when it is wanted.
+  // Taken here rather than reused from earlier in the run: everything between then and
+  // now also wrote takes into this directory, and comparing against a list from the top
+  // of the file makes this fail for bookkeeping reasons rather than real ones.
+  const before = fs.readdirSync(dir).filter(f => f.endsWith('.wav'));
+
   const dropper = new WebSocket(url(TOKEN));
   await new Promise(r => dropper.on('open', r));
   dropper.send(JSON.stringify({ t: 'start' }));
@@ -157,7 +214,7 @@ async function main() {
   await sleep(300);
 
   const after = fs.readdirSync(dir).filter(f => f.endsWith('.wav'));
-  const dropped = after.filter(f => !files.includes(f));
+  const dropped = after.filter(f => !before.includes(f));
   ok('a dropped connection still leaves its audio', dropped.length === 1, after.join(', '));
   if (dropped.length === 1) {
     const w = fs.readFileSync(path.join(dir, dropped[0]));
