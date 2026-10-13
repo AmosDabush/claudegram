@@ -166,6 +166,22 @@ async function main() {
       `header ${w.readUInt32LE(40)}, body ${w.length - 44}`);
   }
 
+  // ── a port that is already taken must not end the process ──────────────────
+  // EADDRINUSE does not throw out of start(); it arrives as an 'error' event, and an
+  // 'error' event nobody is listening for does not get logged, it kills the process.
+  // That is the bot going down because somebody pressed the button twice, so the test
+  // is "did this survive at all", and reaching the next line is the assertion.
+  let refusedPort = null;
+  try {
+    const clash = live.start({ port: actualPort, token: TOKEN, dir, log: quiet });
+    await clash.listening;
+    await clash.close();
+  } catch (e) {
+    refusedPort = e.message;
+  }
+  ok('a port already in use is a rejection, not a dead process',
+    refusedPort !== null && /already in use/.test(refusedPort), String(refusedPort));
+
   client.close();
   await server.close();
   fs.rmSync(dir, { recursive: true, force: true });
