@@ -24,6 +24,21 @@ import sys
 MODEL = os.environ.get('STT_MODEL', 'medium')
 LANG = os.environ.get('STT_LANG', 'he')
 
+# The vocabulary of the conversations this actually transcribes.
+#
+# Override with STT_PROMPT. Worth doing: a prompt naming your own projects, tools and
+# the people you talk about is the cheapest accuracy there is, and the default below is
+# only a guess at somebody else's.
+#
+# Written as a sentence rather than a word list because that is what whisper expects —
+# it is conditioning text, as if the recording had been preceded by it, so a list of
+# terms reads as a strange utterance and a sentence reads as context.
+PROMPT = os.environ.get('STT_PROMPT') or (
+    'שיחה על פיתוח תוכנה בעברית ובאנגלית. מוזכרים בה claudegram, dabushgram, '
+    'Claude Code, טלגרם, בוט, טופיק, סשן, קומיט, ריפו, גיט, פוש, לוג, API, '
+    'WebSocket, Whisper, אנדרואיד, Kotlin, Node, ווינדוס, מק.'
+)
+
 
 def emit(obj):
     sys.stdout.write(json.dumps(obj, ensure_ascii=False) + '\n')
@@ -86,6 +101,19 @@ def main():
                 # what keeps "..." out of the transcript.
                 vad_filter=True,
                 condition_on_previous_text=False,
+                # What this conversation is about, before it hears any of it.
+                #
+                # Whisper guesses a word from its sound and from what usually follows
+                # what came before, and it has no idea it is listening to somebody
+                # dictating about their own software in two languages at once. Proper
+                # nouns it has never seen come back as whatever real words they sound
+                # like — which is how a sentence about this project arrived containing
+                # "טרוריזם רידלי".
+                #
+                # A prompt is not a filter and guarantees nothing. It tilts the guess,
+                # and tilting it towards the right vocabulary is most of the difference
+                # for mixed Hebrew and English technical speech.
+                initial_prompt=job.get('prompt') or PROMPT,
             )
             text = ''.join(s.text for s in segments).strip()
             emit({'id': jid, 'text': text})
