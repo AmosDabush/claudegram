@@ -30,6 +30,7 @@ const helpCommands = require('./lib/commands/help');
 const askCommands = require('./lib/commands/ask');
 const attachCommands = require('./lib/commands/attach');
 const gaggimateCommands = require('./lib/commands/gaggimate');
+const liveCommands = require('./lib/commands/live');
 const settingsNL = require('./lib/commands/settings-nl');
 const stt = require('./lib/stt');
 
@@ -327,6 +328,7 @@ bookmarkCommands.register(bot, isAuthorized);
 askCommands.register(bot, isAuthorized);
 helpCommands.register(bot, isAuthorized);
 gaggimateCommands.register(bot, isAuthorized);
+liveCommands.register(bot, isAuthorized);
 attachCommands.register(bot, isAuthorized);
 settingsNL.register(bot, isAuthorized);
 attachCommands.setRenderers({
@@ -1110,6 +1112,7 @@ async function handleCallbackQuery(bot, query) {
   if (helpCommands.handleCallback(bot, query, userState)) return;
   if (bookmarkCommands.handleCallback(bot, query, userState)) return;
   if (gaggimateCommands.handleCallback(bot, query)) return;   // own gag: namespace
+  if (liveCommands.handleCallback(bot, query)) return;        // own live: namespace
   if (settingsNL.handleCallback(bot, query, userState)) return;   // own nls: namespace
 
   // Handle quick settings callbacks
@@ -1670,6 +1673,7 @@ if (GROUP_BOT_ANSWERS) {
   askCommands.register(groupBot, isAuthorized);
   helpCommands.register(groupBot, isAuthorized);
   gaggimateCommands.register(groupBot, isAuthorized);
+  liveCommands.register(groupBot, isAuthorized);
   settingsNL.register(groupBot, isAuthorized);
 
   // With more than one bot in a group, Telegram appends @botname to every command the

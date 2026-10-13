@@ -18,7 +18,22 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-process.env.CLAUDEGRAM_QA = '1';
+/**
+ * Which of the two things this file is, decided before anything is loaded.
+ *
+ * lib/config reads CLAUDEGRAM_QA once, when it is first required, and lib/live requires
+ * it. So the choice between the real data directory and the throwaway one is made at
+ * import time and cannot be taken back afterwards — setting the flag at the top and
+ * clearing it further down looked right and did nothing, and the real receiver quietly
+ * wrote its recordings into data-qa, which is a directory that exists to be deleted.
+ *
+ * Serving reads the real .env; testing must not, or a run picks up the live token and
+ * port and collides with the receiver it is supposed to be testing.
+ */
+const SERVING = process.argv.includes('--serve');
+
+if (SERVING) require('dotenv').config({ path: path.join(__dirname, '..', '.env'), quiet: true });
+else process.env.CLAUDEGRAM_QA = '1';
 
 const live = require('../lib/live');
 
@@ -169,10 +184,12 @@ async function main() {
  * means the audio arrived slower than it was spoken, and a single four second gap on a
  * motorway matters more than a good average.
  */
-if (process.argv.includes('--serve')) {
+if (SERVING) {
   const server = live.start({});
-  console.log(`\nup. health check: http://<this machine>:${server.port}/health`);
-  console.log('ctrl-c to stop.\n');
+  server.listening.then((port) => {
+    console.log(`\nup on ${port}. health check: http://<this machine>:${port}/health`);
+    console.log('ctrl-c to stop.\n');
+  });
 } else {
   main();
 }
