@@ -40,6 +40,28 @@ PROMPT = os.environ.get('STT_PROMPT') or (
 )
 
 
+#: What whisper says when there is nothing to say.
+#:
+#: It was trained on subtitle tracks, so fed silence it produces what sits at the end
+#: of every video it ever read. These arrive looking exactly like something the user
+#: said, and were being passed on as such — "תודה רבה" turned up repeatedly with no
+#: one having said it.
+#:
+#: Matched only when a whole segment is nothing but the phrase. Somebody actually
+#: thanking you mid-sentence keeps their words.
+HALLUCINATIONS = {
+    'תודה רבה', 'תודה', 'תודה רבה לכם', 'תודה על הצפייה', 'כתוביות',
+    'הכתוביות', 'תרגום וכתוביות', 'כתוביות בעברית',
+    'thank you', 'thanks for watching', 'thank you for watching',
+    'subtitles by the amara.org community', 'you',
+}
+
+
+def bare(text):
+    """A segment stripped to its bare words, for comparing against the list above."""
+    return (text or '').strip().strip('.,!?׃…-" \t').lower()
+
+
 def emit(obj):
     sys.stdout.write(json.dumps(obj, ensure_ascii=False) + '\n')
     sys.stdout.flush()
@@ -101,6 +123,15 @@ def main():
                 # what keeps "..." out of the transcript.
                 vad_filter=True,
                 condition_on_previous_text=False,
+                # Silence is where whisper invents. It was trained on subtitle tracks,
+                # so given nothing to transcribe it produces what sits at the end of
+                # every video it ever read: "תודה רבה", "Thank you", "כתוביות".
+                # It arrives looking exactly like something the user said, and it was
+                # being sent on as such.
+                #
+                # Raised from the 0.6 default: a segment this model is more than half
+                # unsure contains speech is not worth the risk of being a sign-off.
+                no_speech_threshold=0.45,
                 # What this conversation is about, before it hears any of it.
                 #
                 # Whisper guesses a word from its sound and from what usually follows
@@ -115,8 +146,21 @@ def main():
                 # for mixed Hebrew and English technical speech.
                 initial_prompt=job.get('prompt') or PROMPT,
             )
-            text = ''.join(s.text for s in segments).strip()
-            emit({'id': jid, 'text': text})
+            kept = []
+            for s in segments:
+                # Belt as well as braces. The threshold above catches most of it, and
+                # what survives is a short segment the model was confident about and
+                # still invented — the sign-off phrases, which are frequent enough in
+                # its training data to be produced confidently out of room tone.
+                #
+                # Only when the segment is nothing but the phrase. Somebody genuinely
+                # saying thank you in the middle of a sentence keeps it; a whole
+                # segment that is only those two words did not come from a person.
+                if bare(s.text) in HALLUCINATIONS:
+                    continue
+                kept.append(s.text)
+
+            emit({'id': jid, 'text': ''.join(kept).strip()})
         except Exception as e:
             emit({'id': jid, 'error': str(e)})
 
