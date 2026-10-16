@@ -332,6 +332,10 @@ askCommands.register(bot, isAuthorized);
 helpCommands.register(bot, isAuthorized);
 gaggimateCommands.register(bot, isAuthorized);
 liveCommands.register(bot, isAuthorized);
+// Both halves of the live channel are children of this process, so every restart
+// kills them and leaves a phone holding the address of a tunnel that is gone. If it
+// was on before, it comes back, and the new address goes into the topic.
+if (!QA_MODE) liveCommands.restore(bot).catch(e => console.log('[live] restore failed:', e.message));
 attachCommands.register(bot, isAuthorized);
 settingsNL.register(bot, isAuthorized);
 attachCommands.setRenderers({
