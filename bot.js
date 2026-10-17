@@ -335,6 +335,11 @@ liveCommands.register(bot, isAuthorized);
 // Both halves of the live channel are children of this process, so every restart
 // kills them and leaves a phone holding the address of a tunnel that is gone. If it
 // was on before, it comes back, and the new address goes into the topic.
+// Dictation is punctuated by a model in a process that costs twenty seconds to
+// start and three to answer once it is up. Started here, so the first dictated
+// message of the day does not pay for it -- and paying for it is indistinguishable
+// from the feature not existing, which is exactly how it was reported.
+if (!QA_MODE) require('./lib/tidy').warm();
 if (!QA_MODE) liveCommands.restore(bot).catch(e => console.log('[live] restore failed:', e.message));
 attachCommands.register(bot, isAuthorized);
 settingsNL.register(bot, isAuthorized);
